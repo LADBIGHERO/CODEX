@@ -1,0 +1,13 @@
+# Local app installs and downloads
+Cursor/
+Downloads/
+
+# Large/generated media folders
+视频/
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.tmp
+*.log

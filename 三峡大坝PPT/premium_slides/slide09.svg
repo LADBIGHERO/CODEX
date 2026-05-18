@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+<defs>
+  <linearGradient id="navy" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#08213C"/><stop offset="1" stop-color="#12345A"/></linearGradient>
+  <linearGradient id="teal" x1="0" x2="1"><stop stop-color="#1E7F86"/><stop offset="1" stop-color="#42A5A9"/></linearGradient>
+  <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#0B1F33" flood-opacity=".12"/></filter>
+  <pattern id="grid" width="42" height="42" patternUnits="userSpaceOnUse"><path d="M42 0H0V42" fill="none" stroke="#DDE6EE" stroke-width="1"/></pattern>
+</defs>
+<rect width="1600" height="900" fill="#F4F7FA"/>
+<path d="M0 705 C260 650, 420 780, 705 720 C980 662, 1160 610, 1600 690 L1600 900 L0 900Z" fill="#E7F1F4"/>
+<path d="M0 742 C300 690, 440 825, 710 760 C990 692, 1180 648, 1600 722" fill="none" stroke="#C9E2E6" stroke-width="7" opacity=".8"/>
+<text x="70" y="70" font-size="18" fill="#627D98" font-weight="600">三峡大坝的历史与现在</text>
+<text x="1530" y="70" font-size="16" fill="#627D98" text-anchor="end">09</text>
+<text x="70" y="128" font-size="44" fill="#102A43" font-weight="900">辩证看待：成就、挑战与长期治理</text>
+<rect x="72" y="150" width="168" height="7" rx="3.5" fill="#C51F2C"/>
+<rect x="95" y="205" width="610" height="470" rx="28" fill="#FFFFFF" filter="url(#shadow)"/><rect x="895" y="205" width="610" height="470" rx="28" fill="#FFFFFF" filter="url(#shadow)"/><text x="400" y="280" font-size="38" fill="#1E7F86" font-weight="900" text-anchor="middle" opacity="1"><tspan x="400" dy="0">综合成就</tspan></text><text x="1200" y="280" font-size="38" fill="#C51F2C" font-weight="900" text-anchor="middle" opacity="1"><tspan x="1200" dy="0">长期课题</tspan></text><text x="170" y="360" font-size="27" fill="#334E68" font-weight="600" text-anchor="start" opacity="1"><tspan x="170" dy="0">• 防洪能力提升</tspan><tspan x="170" dy="36.45">• 清洁能源供应</tspan><tspan x="170" dy="36.45">• 航运条件改善</tspan><tspan x="170" dy="36.45">• 水资源调度增强</tspan></text><text x="970" y="360" font-size="27" fill="#334E68" font-weight="600" text-anchor="start" opacity="1"><tspan x="970" dy="0">• 生态环境保护</tspan><tspan x="970" dy="36.45">• 泥沙淤积监测</tspan><tspan x="970" dy="36.45">• 库区发展与移民后续扶持</tspan><tspan x="970" dy="36.45">• 文物保护与长期治理</tspan></text><circle cx="800" cy="440" r="82" fill="#12345A"/><text x="800" y="432" font-size="29" fill="#FFFFFF" font-weight="900" text-anchor="middle" opacity="1"><tspan x="800" dy="0">系统</tspan></text><text x="800" y="470" font-size="29" fill="#FFFFFF" font-weight="900" text-anchor="middle" opacity="1"><tspan x="800" dy="0">治理</tspan></text><path d="M710 440 H624" stroke="#9FB3C8" stroke-width="6"/><path d="M890 440 H976" stroke="#9FB3C8" stroke-width="6"/><rect x="260" y="730" width="1080" height="58" rx="29" fill="#EDF7F8"/><text x="800" y="769" font-size="26" fill="#12345A" font-weight="800" text-anchor="middle" opacity="1"><tspan x="800" dy="0">坚持历史、全面、辩证眼光，推动工程效益与生态保护相统一</tspan></text></svg>

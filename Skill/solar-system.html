@@ -1,0 +1,1679 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>拟真太阳系模拟器</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --panel: rgba(10, 14, 24, 0.78);
+      --panel-strong: rgba(18, 23, 36, 0.92);
+      --line: rgba(255, 255, 255, 0.15);
+      --text: #f4f7fb;
+      --muted: #aeb7c4;
+      --accent: #e9c46a;
+      --accent-2: #55c2ff;
+      --danger: #ff7a7a;
+      --shadow: 0 18px 60px rgba(0, 0, 0, 0.42);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-height: 100%;
+      overflow: hidden;
+      background: #02040a;
+      color: var(--text);
+    }
+
+    #space {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background:
+        radial-gradient(circle at 42% 52%, rgba(253, 184, 19, 0.07), transparent 14%),
+        radial-gradient(circle at 74% 14%, rgba(85, 194, 255, 0.08), transparent 18%),
+        #02040a;
+      cursor: grab;
+    }
+
+    #space:active {
+      cursor: grabbing;
+    }
+
+    .hud {
+      position: fixed;
+      inset: 18px auto auto 18px;
+      width: min(390px, calc(100vw - 36px));
+      max-height: calc(100vh - 36px);
+      overflow: auto;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0)),
+        var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+      scrollbar-width: thin;
+    }
+
+    .hud h1 {
+      margin: 0 0 4px;
+      font-size: 20px;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+
+    .hud p {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 96px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      min-height: 36px;
+      margin: 8px 0;
+    }
+
+    label,
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    .value {
+      min-width: 64px;
+      text-align: right;
+      color: #f9d986;
+      font-variant-numeric: tabular-nums;
+      font-size: 12px;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    button {
+      min-height: 34px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: rgba(255, 255, 255, 0.34);
+      background: rgba(255, 255, 255, 0.13);
+    }
+
+    button.active {
+      border-color: rgba(233, 196, 106, 0.7);
+      background: rgba(233, 196, 106, 0.18);
+      color: #ffe4a0;
+    }
+
+    .switches {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin: 12px 0 14px;
+    }
+
+    .toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 34px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--muted);
+      font-size: 12px;
+      user-select: none;
+    }
+
+    .toggle input {
+      accent-color: var(--accent-2);
+    }
+
+    .planet-list {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 7px;
+      margin-top: 12px;
+    }
+
+    .planet-pill {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 30px;
+      padding: 0 7px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .planet-pill.active {
+      border-color: rgba(85, 194, 255, 0.78);
+      background: rgba(85, 194, 255, 0.15);
+    }
+
+    .readout {
+      margin-top: 14px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.24);
+    }
+
+    .readout-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+
+    .swatch {
+      flex: 0 0 auto;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      box-shadow: 0 0 14px currentColor;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .stats b {
+      display: block;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .status {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      display: grid;
+      gap: 6px;
+      min-width: 240px;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0)),
+        var(--panel-strong);
+      box-shadow: var(--shadow);
+      color: var(--muted);
+      font-size: 12px;
+      backdrop-filter: blur(18px);
+    }
+
+    .status b {
+      color: var(--text);
+      font-weight: 680;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .hint {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      translate: -50% 0;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: rgba(8, 10, 16, 0.64);
+      color: var(--muted);
+      font-size: 12px;
+      backdrop-filter: blur(12px);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+
+    @media (max-width: 760px) {
+      .hud {
+        inset: 10px 10px auto;
+        width: auto;
+        max-height: 48vh;
+        padding: 12px;
+      }
+
+      .row {
+        grid-template-columns: 78px 1fr;
+      }
+
+      .row .value {
+        grid-column: 2;
+        justify-self: end;
+        margin-top: -8px;
+      }
+
+      .planet-list {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .status {
+        right: 10px;
+        bottom: 10px;
+        min-width: 0;
+        width: calc(100vw - 20px);
+      }
+
+      .hint {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <canvas id="space" aria-label="拟真太阳系模拟画布"></canvas>
+
+  <aside class="hud" aria-label="模拟控制">
+    <h1>拟真太阳系模拟器</h1>
+    <p>轨道按开普勒椭圆近似，保留偏心率、倾角、近日点方向和真实相对公转周期；距离做非线性压缩，方便在屏幕内观察。</p>
+
+    <div class="toolbar" role="group" aria-label="时间控制">
+      <button id="play" class="active" title="播放或暂停">暂停</button>
+      <button id="slower" title="降低时间倍率">-</button>
+      <button id="faster" title="提高时间倍率">+</button>
+      <button id="today" title="回到当前历元">今天</button>
+      <button id="sound" title="开启或关闭孤寂太空音效">音效</button>
+    </div>
+
+    <div class="row">
+      <label for="speed">时间倍率</label>
+      <input id="speed" type="range" min="-2" max="7" step="0.01" value="2.18">
+      <output class="value" id="speedValue">150 天/秒</output>
+    </div>
+
+    <div class="row">
+      <label for="zoom">缩放</label>
+      <input id="zoom" type="range" min="0.46" max="200" step="0.01" value="1">
+      <output class="value" id="zoomValue">1.00x</output>
+    </div>
+
+    <div class="row">
+      <label for="tilt">视角倾角</label>
+      <input id="tilt" type="range" min="0.16" max="1" step="0.01" value="0.64">
+      <output class="value" id="tiltValue">64%</output>
+    </div>
+
+    <div class="row">
+      <label for="planetScale">行星放大</label>
+      <input id="planetScale" type="range" min="0.55" max="2.4" step="0.01" value="1.24">
+      <output class="value" id="planetScaleValue">1.24x</output>
+    </div>
+
+    <div class="row">
+      <label for="shipSpeed">飞船速度</label>
+      <input id="shipSpeed" type="range" min="0.2" max="8" step="0.1" value="2.4">
+      <output class="value" id="shipSpeedValue">2.4x</output>
+    </div>
+
+    <div class="switches">
+      <label class="toggle"><input id="labels" type="checkbox" checked> 标签</label>
+      <label class="toggle"><input id="trails" type="checkbox" checked> 轨迹</label>
+      <label class="toggle"><input id="moons" type="checkbox" checked> 主要卫星</label>
+      <label class="toggle"><input id="trueSize" type="checkbox"> 半径比例</label>
+      <label class="toggle"><input id="freeView" type="checkbox"> 自由视角</label>
+      <label class="toggle"><input id="sunView" type="checkbox"> 太阳视角</label>
+      <label class="toggle"><input id="shipView" type="checkbox"> 飞船视角</label>
+    </div>
+
+    <div class="planet-list" id="planetList" aria-label="选择追踪天体"></div>
+
+    <section class="readout" aria-label="当前天体数据">
+      <div class="readout-title">
+        <span id="selectedName">地球</span>
+        <span class="swatch" id="selectedSwatch"></span>
+      </div>
+      <div class="stats" id="stats"></div>
+    </section>
+  </aside>
+
+  <div class="hint">飞船视角：W/S 前后 · A/D 左右 · R/F 上下 · 拖拽转头 · 空格暂停</div>
+
+  <section class="status" aria-label="时间状态">
+    <span>模拟日期 <b id="simDate"></b></span>
+    <span>中心天体 <b id="focusName">地球</b></span>
+    <span>视角模式 <b id="viewMode">追踪</b></span>
+    <span>比例 <b id="scaleInfo"></b></span>
+  </section>
+
+  <script>
+    const canvas = document.getElementById("space");
+    const ctx = canvas.getContext("2d", { alpha: false });
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+    const AU_KM = 149597870.7;
+    const EARTH_RADIUS_KM = 6371;
+    const J2000 = Date.UTC(2000, 0, 1, 12, 0, 0);
+    const DEG = Math.PI / 180;
+
+    const bodies = [
+      { id: "mercury", name: "水星", a: 0.3871, e: 0.2056, i: 7.005, peri: 77.46, period: 87.969, radius: 0.383, day: 58.646, tilt: 0.03, phase: 252.25, color: "#b9aaa0", bands: ["#8b8078", "#ddd2c6"] },
+      { id: "venus", name: "金星", a: 0.7233, e: 0.0068, i: 3.395, peri: 131.53, period: 224.701, radius: 0.949, day: -243.025, tilt: 177.4, phase: 181.98, color: "#d8b36a", bands: ["#9f7845", "#f0d186"] },
+      { id: "earth", name: "地球", a: 1.0000, e: 0.0167, i: 0, peri: 102.94, period: 365.256, radius: 1, day: 0.997, tilt: 23.44, phase: 100.46, color: "#58a6ff", ocean: "#1b5fbd", land: "#4da96c", cloud: "#edf6ff" },
+      { id: "mars", name: "火星", a: 1.5237, e: 0.0934, i: 1.85, peri: 336.04, period: 686.98, radius: 0.532, day: 1.026, tilt: 25.19, phase: 355.43, color: "#c96748", bands: ["#743e31", "#e59668"] },
+      { id: "jupiter", name: "木星", a: 5.2028, e: 0.0489, i: 1.303, peri: 14.75, period: 4332.59, radius: 11.21, day: 0.414, tilt: 3.13, phase: 34.35, color: "#d8bb8a", bands: ["#9a6b48", "#e9d1a8", "#b88a5e", "#f2dfbf"] },
+      { id: "saturn", name: "土星", a: 9.5388, e: 0.0565, i: 2.489, peri: 92.43, period: 10759.22, radius: 9.45, day: 0.444, tilt: 26.73, phase: 50.08, color: "#d9c38a", bands: ["#9f885d", "#ead8a3", "#c1a26b"], ring: true },
+      { id: "uranus", name: "天王星", a: 19.1914, e: 0.0472, i: 0.773, peri: 170.96, period: 30688.5, radius: 4.01, day: -0.718, tilt: 97.77, phase: 314.05, color: "#8bd8e8", bands: ["#5fb7cf", "#d4fbff"] },
+      { id: "neptune", name: "海王星", a: 30.0611, e: 0.0086, i: 1.77, peri: 44.97, period: 60182, radius: 3.88, day: 0.671, tilt: 28.32, phase: 304.35, color: "#466df3", bands: ["#2340a9", "#6e93ff"] }
+    ];
+
+    const moons = {
+      earth: [{ name: "月球", period: 27.322, radius: 0.272, distance: 0.00257, color: "#c7c5bd", phase: 125 }],
+      jupiter: [
+        { name: "Io", period: 1.769, radius: 0.286, distance: 0.00282, color: "#e3c06a", phase: 40 },
+        { name: "Eu", period: 3.551, radius: 0.245, distance: 0.00449, color: "#d4c4a8", phase: 132 },
+        { name: "Ga", period: 7.155, radius: 0.413, distance: 0.00716, color: "#b8a28e", phase: 248 },
+        { name: "Ca", period: 16.689, radius: 0.378, distance: 0.01259, color: "#7d766d", phase: 315 }
+      ],
+      saturn: [{ name: "Titan", period: 15.945, radius: 0.404, distance: 0.00817, color: "#d7a55e", phase: 76 }]
+    };
+
+    const ui = {
+      play: document.getElementById("play"),
+      slower: document.getElementById("slower"),
+      faster: document.getElementById("faster"),
+      today: document.getElementById("today"),
+      sound: document.getElementById("sound"),
+      speed: document.getElementById("speed"),
+      zoom: document.getElementById("zoom"),
+      tilt: document.getElementById("tilt"),
+      planetScale: document.getElementById("planetScale"),
+      shipSpeed: document.getElementById("shipSpeed"),
+      labels: document.getElementById("labels"),
+      trails: document.getElementById("trails"),
+      moons: document.getElementById("moons"),
+      trueSize: document.getElementById("trueSize"),
+      freeView: document.getElementById("freeView"),
+      sunView: document.getElementById("sunView"),
+      shipView: document.getElementById("shipView"),
+      speedValue: document.getElementById("speedValue"),
+      zoomValue: document.getElementById("zoomValue"),
+      tiltValue: document.getElementById("tiltValue"),
+      planetScaleValue: document.getElementById("planetScaleValue"),
+      shipSpeedValue: document.getElementById("shipSpeedValue"),
+      planetList: document.getElementById("planetList"),
+      selectedName: document.getElementById("selectedName"),
+      selectedSwatch: document.getElementById("selectedSwatch"),
+      stats: document.getElementById("stats"),
+      simDate: document.getElementById("simDate"),
+      focusName: document.getElementById("focusName"),
+      viewMode: document.getElementById("viewMode"),
+      scaleInfo: document.getElementById("scaleInfo")
+    };
+
+    let width = 0;
+    let height = 0;
+    let centerX = 0;
+    let centerY = 0;
+    let cameraX = 0;
+    let cameraY = 0;
+    let selected = bodies[2];
+    let playing = true;
+    let simDays = (Date.now() - J2000) / 86400000;
+    let lastTime = performance.now();
+    let stars = [];
+    let pointer = null;
+    let suppressClick = false;
+    let viewYaw = 0;
+    let viewPitch = 0.62;
+    let viewCenter = { x: 0, y: 0, z: 0 };
+    let viewCenterReady = false;
+    let ship = { x: 0, y: -240, z: 70, yaw: 0, pitch: 0 };
+    let keys = new Set();
+    let audio = null;
+    let positions = new Map();
+
+    function resize() {
+      width = innerWidth;
+      height = innerHeight;
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      centerX = width * 0.5;
+      centerY = height * 0.54;
+      stars = makeStars(Math.floor(Math.min(1400, Math.max(460, width * height / 1250))));
+    }
+
+    function makeStars(count) {
+      return Array.from({ length: count }, (_, index) => {
+        const bright = Math.random() ** 2;
+        return {
+          x: Math.random() * width,
+          y: Math.random() * height,
+          r: 0.25 + bright * 1.45,
+          a: 0.18 + bright * 0.82,
+          tw: Math.random() * Math.PI * 2,
+          parallax: 0.02 + Math.random() * 0.08,
+          hue: index % 11 === 0 ? "#ffe2bd" : index % 13 === 0 ? "#c8ddff" : "#ffffff"
+        };
+      });
+    }
+
+    function daysPerSecond() {
+      return Math.round(10 ** Number(ui.speed.value));
+    }
+
+    function distanceScale() {
+      return Math.min(width, height) * 0.038 * Number(ui.zoom.value);
+    }
+
+    function orbitRadiusAU(au) {
+      return Math.log1p(au * 2.22) * distanceScale() * 3.42;
+    }
+
+    function planetRadius(body) {
+      const scale = Number(ui.planetScale.value);
+      const zoomBoost = Math.pow(Number(ui.zoom.value), 0.58);
+      if (ui.shipView.checked) return basePlanetRadius(body) * Math.max(0.28, Math.pow(Number(ui.zoom.value), 0.36) * 0.35);
+      return Math.min(Math.min(width, height) * 0.19, basePlanetRadius(body) * zoomBoost);
+    }
+
+    function basePlanetRadius(body) {
+      const scale = Number(ui.planetScale.value);
+      if (ui.trueSize.checked) {
+        return Math.max(1.2, Math.sqrt(body.radius) * 1.95 * scale);
+      }
+      return Math.max(3.2, Math.log1p(body.radius * 1.8) * 4.9 * scale);
+    }
+
+    function solveKepler(meanAnomaly, e) {
+      let E = meanAnomaly;
+      for (let n = 0; n < 7; n += 1) {
+        E -= (E - e * Math.sin(E) - meanAnomaly) / (1 - e * Math.cos(E));
+      }
+      return E;
+    }
+
+    function roundedRectPath(x, y, w, h, r) {
+      const radius = Math.min(r, w / 2, h / 2);
+      ctx.moveTo(x + radius, y);
+      ctx.lineTo(x + w - radius, y);
+      ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+      ctx.lineTo(x + w, y + h - radius);
+      ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+      ctx.lineTo(x + radius, y + h);
+      ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+      ctx.lineTo(x, y + radius);
+      ctx.quadraticCurveTo(x, y, x + radius, y);
+    }
+
+    function projectOrbitPoint(x, y, z) {
+      if ((ui.freeView.checked && selected) || ui.sunView.checked) {
+        const dx = x - viewCenter.x;
+        const dy = y - viewCenter.y;
+        const dz = z - viewCenter.z;
+        const yawSin = Math.sin(viewYaw);
+        const yawCos = Math.cos(viewYaw);
+        const pitchSin = Math.sin(viewPitch);
+        const pitchCos = Math.cos(viewPitch);
+        const rightX = yawCos;
+        const rightY = -yawSin;
+        const viewX = pitchCos * yawSin;
+        const viewY = pitchCos * yawCos;
+        const viewZ = pitchSin;
+        const upX = -pitchSin * yawSin;
+        const upY = -pitchSin * yawCos;
+        const upZ = pitchCos;
+        const screenX = dx * rightX + dy * rightY;
+        const screenY = dx * upX + dy * upY + dz * upZ;
+        return {
+          x: centerX + cameraX + screenX,
+          y: centerY + cameraY - screenY,
+          depth: dx * viewX + dy * viewY + dz * viewZ
+        };
+      }
+      const tilt = Number(ui.tilt.value);
+      const yawCos = Math.cos(viewYaw);
+      const yawSin = Math.sin(viewYaw);
+      const rotatedX = x * yawCos - y * yawSin;
+      const rotatedY = x * yawSin + y * yawCos;
+      const projectedY = rotatedY * tilt - z * (1 - tilt) * 0.55;
+      return {
+        x: centerX + cameraX + rotatedX,
+        y: centerY + cameraY + projectedY,
+        depth: rotatedY * (1 - tilt) + z * 0.35
+      };
+    }
+
+    function projectShipPoint(x, y, z) {
+      const dx = x - ship.x;
+      const dy = y - ship.y;
+      const dz = z - ship.z;
+      const yawCos = Math.cos(-ship.yaw);
+      const yawSin = Math.sin(-ship.yaw);
+      const side = dx * yawCos - dy * yawSin;
+      const forward = dx * yawSin + dy * yawCos;
+      const pitchCos = Math.cos(-ship.pitch);
+      const pitchSin = Math.sin(-ship.pitch);
+      const up = dz * pitchCos - forward * pitchSin;
+      const depth = dz * pitchSin + forward * pitchCos;
+      const near = 18;
+      const fov = Math.min(width, height) * 0.95;
+
+      if (depth <= near) {
+        return {
+          x: centerX + side * fov / near,
+          y: centerY - up * fov / near,
+          depth,
+          scale: fov / near,
+          visible: false,
+          behind: true
+        };
+      }
+
+      const scale = fov / depth;
+      return {
+        x: centerX + side * scale,
+        y: centerY - up * scale,
+        depth,
+        scale,
+        visible: true,
+        behind: false
+      };
+    }
+
+    function projectPoint(x, y, z) {
+      return ui.shipView.checked ? projectShipPoint(x, y, z) : projectOrbitPoint(x, y, z);
+    }
+
+    function bodyWorldPosition(body, days) {
+      const mean = ((body.phase + days * 360 / body.period) % 360) * DEG;
+      const E = solveKepler(mean, body.e);
+      const trueAnomaly = 2 * Math.atan2(Math.sqrt(1 + body.e) * Math.sin(E / 2), Math.sqrt(1 - body.e) * Math.cos(E / 2));
+      const rAU = body.a * (1 - body.e * Math.cos(E));
+      const r = orbitRadiusAU(rAU);
+      const angle = trueAnomaly + body.peri * DEG;
+      const incline = body.i * DEG;
+      const x = r * Math.cos(angle);
+      const y = r * Math.sin(angle) * Math.cos(incline);
+      const z = r * Math.sin(angle) * Math.sin(incline);
+      return { worldX: x, worldY: y, worldZ: z, rAU, angle, trueAnomaly };
+    }
+
+    function bodyPosition(body, days) {
+      const world = bodyWorldPosition(body, days);
+      return { ...projectPoint(world.worldX, world.worldY, world.worldZ), ...world };
+    }
+
+    function focusWorldPosition() {
+      if (ui.sunView.checked) return { worldX: 0, worldY: 0, worldZ: 0 };
+      return bodyWorldPosition(selected, simDays);
+    }
+
+    function updateViewCenter(force = false) {
+      if (!ui.freeView.checked && !ui.sunView.checked) return;
+      const target = focusWorldPosition();
+      if (force || !viewCenterReady) {
+        viewCenter.x = target.worldX;
+        viewCenter.y = target.worldY;
+        viewCenter.z = target.worldZ;
+        viewCenterReady = true;
+        return;
+      }
+      const ease = 0.075;
+      viewCenter.x += (target.worldX - viewCenter.x) * ease;
+      viewCenter.y += (target.worldY - viewCenter.y) * ease;
+      viewCenter.z += (target.worldZ - viewCenter.z) * ease;
+    }
+
+    function aimShipAt(x, y, z) {
+      const dx = x - ship.x;
+      const dy = y - ship.y;
+      const dz = z - ship.z;
+      const flat = Math.hypot(dx, dy) || 1;
+      ship.yaw = Math.atan2(dx, dy);
+      ship.pitch = Math.max(-1.36, Math.min(1.36, Math.atan2(dz, flat)));
+    }
+
+    function placeShipNearSelected() {
+      const current = bodyPosition(selected, simDays);
+      const distance = Math.max(180, basePlanetRadius(selected) * 18);
+      ship.x = current.worldX;
+      ship.y = current.worldY - distance;
+      ship.z = current.worldZ + distance * 0.22;
+      aimShipAt(current.worldX, current.worldY, current.worldZ);
+    }
+
+    function updateShip(dt) {
+      if (!ui.shipView.checked) return;
+      const forward = {
+        x: Math.sin(ship.yaw) * Math.cos(ship.pitch),
+        y: Math.cos(ship.yaw) * Math.cos(ship.pitch),
+        z: Math.sin(ship.pitch)
+      };
+      const right = { x: Math.cos(ship.yaw), y: -Math.sin(ship.yaw), z: 0 };
+      const base = Math.min(width, height) * 0.13 * Number(ui.shipSpeed.value);
+      const boost = keys.has("ShiftLeft") || keys.has("ShiftRight") ? 2.8 : 1;
+      const speed = base * boost * dt;
+      let mx = 0;
+      let my = 0;
+      let mz = 0;
+
+      if (keys.has("KeyW") || keys.has("ArrowUp")) {
+        mx += forward.x;
+        my += forward.y;
+        mz += forward.z;
+      }
+      if (keys.has("KeyS") || keys.has("ArrowDown")) {
+        mx -= forward.x;
+        my -= forward.y;
+        mz -= forward.z;
+      }
+      if (keys.has("KeyD")) {
+        mx += right.x;
+        my += right.y;
+      }
+      if (keys.has("KeyA")) {
+        mx -= right.x;
+        my -= right.y;
+      }
+      if (keys.has("Space") || keys.has("KeyR")) mz += 1;
+      if (keys.has("ControlLeft") || keys.has("ControlRight") || keys.has("KeyC") || keys.has("KeyF")) mz -= 1;
+      if (keys.has("KeyQ") || keys.has("ArrowLeft")) ship.yaw -= dt * 1.15;
+      if (keys.has("KeyE") || keys.has("ArrowRight")) ship.yaw += dt * 1.15;
+
+      const length = Math.hypot(mx, my, mz);
+      if (length > 0) {
+        ship.x += mx / length * speed;
+        ship.y += my / length * speed;
+        ship.z += mz / length * speed;
+      }
+    }
+
+    function drawStars(time) {
+      const deepSpace = ctx.createRadialGradient(width * 0.5, height * 0.54, 0, width * 0.5, height * 0.54, Math.max(width, height) * 0.78);
+      deepSpace.addColorStop(0, "#050916");
+      deepSpace.addColorStop(0.55, "#02040a");
+      deepSpace.addColorStop(1, "#000107");
+      ctx.fillStyle = deepSpace;
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.save();
+      ctx.translate(width * 0.52 + cameraX * 0.015, height * 0.47 + cameraY * 0.015);
+      ctx.rotate(-0.34 + Math.sin(time * 0.00007) * 0.015);
+      ctx.globalCompositeOperation = "screen";
+      ctx.filter = "blur(16px)";
+      const milkyWay = ctx.createLinearGradient(-width * 0.58, 0, width * 0.58, 0);
+      milkyWay.addColorStop(0, "rgba(65, 92, 126, 0)");
+      milkyWay.addColorStop(0.28, "rgba(92, 120, 156, 0.08)");
+      milkyWay.addColorStop(0.52, "rgba(233, 216, 184, 0.16)");
+      milkyWay.addColorStop(0.74, "rgba(80, 109, 148, 0.07)");
+      milkyWay.addColorStop(1, "rgba(65, 92, 126, 0)");
+      ctx.fillStyle = milkyWay;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, width * 0.78, Math.max(34, height * 0.085), 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.filter = "none";
+      ctx.globalCompositeOperation = "source-over";
+      ctx.restore();
+
+      for (const star of stars) {
+        const x = (star.x + cameraX * star.parallax + width * 4) % width;
+        const y = (star.y + cameraY * star.parallax + height * 4) % height;
+        const alpha = star.a * (0.72 + 0.28 * Math.sin(time * 0.0018 + star.tw));
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = star.hue;
+        ctx.beginPath();
+        ctx.arc(x, y, star.r, 0, Math.PI * 2);
+        ctx.fill();
+        if (star.r > 1.25) {
+          ctx.globalAlpha = alpha * 0.42;
+          ctx.strokeStyle = star.hue;
+          ctx.lineWidth = 0.6;
+          ctx.beginPath();
+          ctx.moveTo(x - star.r * 2.3, y);
+          ctx.lineTo(x + star.r * 2.3, y);
+          ctx.moveTo(x, y - star.r * 2.3);
+          ctx.lineTo(x, y + star.r * 2.3);
+          ctx.stroke();
+        }
+      }
+      ctx.globalAlpha = 1;
+
+      const vignette = ctx.createRadialGradient(width * 0.5, height * 0.5, Math.min(width, height) * 0.18, width * 0.5, height * 0.5, Math.max(width, height) * 0.72);
+      vignette.addColorStop(0, "rgba(0,0,0,0)");
+      vignette.addColorStop(1, "rgba(0,0,0,0.42)");
+      ctx.fillStyle = vignette;
+      ctx.fillRect(0, 0, width, height);
+    }
+
+    function drawSun(time) {
+      const sunPos = projectPoint(0, 0, 0);
+      if (ui.shipView.checked && !sunPos.visible) return;
+      const sunX = sunPos.x;
+      const sunY = sunPos.y;
+      const pulse = 1 + Math.sin(time * 0.0017) * 0.035;
+      const shipScale = ui.shipView.checked ? Math.max(0.35, Math.min(9, sunPos.scale)) : 1;
+      ctx.save();
+      ctx.globalCompositeOperation = "screen";
+      const outer = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 190 * pulse * shipScale);
+      outer.addColorStop(0, "rgba(255, 235, 160, 0.72)");
+      outer.addColorStop(0.18, "rgba(255, 169, 59, 0.28)");
+      outer.addColorStop(0.48, "rgba(255, 97, 39, 0.08)");
+      outer.addColorStop(1, "rgba(255, 97, 39, 0)");
+      ctx.fillStyle = outer;
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, 190 * pulse * shipScale, 0, Math.PI * 2);
+      ctx.fill();
+
+      for (let n = 0; n < 22; n += 1) {
+        const angle = n * Math.PI * 2 / 22 + Math.sin(time * 0.0004 + n) * 0.05;
+        const inner = 22 * pulse * shipScale;
+        const outerRay = (48 + Math.sin(time * 0.001 + n * 1.7) * 13) * pulse * shipScale;
+        ctx.strokeStyle = n % 2 ? "rgba(255, 180, 72, 0.15)" : "rgba(255, 228, 150, 0.2)";
+        ctx.lineWidth = n % 2 ? 1.1 : 1.8;
+        ctx.beginPath();
+        ctx.moveTo(sunX + Math.cos(angle) * inner, sunY + Math.sin(angle) * inner);
+        ctx.lineTo(sunX + Math.cos(angle) * outerRay, sunY + Math.sin(angle) * outerRay);
+        ctx.stroke();
+      }
+      ctx.globalCompositeOperation = "source-over";
+
+      const glow = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 104 * pulse * shipScale);
+      glow.addColorStop(0, "rgba(255, 245, 176, 1)");
+      glow.addColorStop(0.13, "rgba(255, 191, 53, 0.92)");
+      glow.addColorStop(0.42, "rgba(255, 112, 32, 0.18)");
+      glow.addColorStop(1, "rgba(255, 112, 32, 0)");
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, 95 * pulse * shipScale, 0, Math.PI * 2);
+      ctx.fill();
+
+      const sun = ctx.createRadialGradient(sunX - 8 * shipScale, sunY - 9 * shipScale, 1, sunX, sunY, 22 * shipScale);
+      sun.addColorStop(0, "#fff9cf");
+      sun.addColorStop(0.55, "#ffca4f");
+      sun.addColorStop(1, "#e45f24");
+      ctx.fillStyle = sun;
+      ctx.shadowColor = "#ffb23a";
+      ctx.shadowBlur = 32 * shipScale;
+      ctx.beginPath();
+      ctx.arc(sunX, sunY, 18 * pulse * shipScale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 0.42;
+      ctx.strokeStyle = "#ffe7a2";
+      ctx.lineWidth = 1.1;
+      for (let n = 0; n < 5; n += 1) {
+        ctx.beginPath();
+        ctx.arc(sunX + Math.sin(time * 0.001 + n) * 2 * shipScale, sunY + Math.cos(time * 0.0012 + n) * 2 * shipScale, (7 + n * 2.5) * shipScale, n, n + Math.PI * 1.24);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+
+    function drawOrbit(body) {
+      const steps = 260;
+      let previous = null;
+      for (let n = 0; n <= steps; n += 1) {
+        const theta = (n / steps) * Math.PI * 2;
+        const rAU = body.a * (1 - body.e * body.e) / (1 + body.e * Math.cos(theta));
+        const r = orbitRadiusAU(rAU);
+        const angle = theta + body.peri * DEG;
+        const incline = body.i * DEG;
+        const point = projectPoint(
+          r * Math.cos(angle),
+          r * Math.sin(angle) * Math.cos(incline),
+          r * Math.sin(angle) * Math.sin(incline)
+        );
+        if (ui.shipView.checked && !point.visible) {
+          previous = null;
+          continue;
+        }
+        if (previous) {
+          const near = Math.max(0, Math.min(1, 0.48 + point.depth / Math.max(260, distanceScale() * 14)));
+          const alpha = body === selected ? 0.23 + near * 0.32 : 0.07 + near * 0.12;
+          ctx.strokeStyle = body === selected ? `rgba(85, 194, 255, ${alpha})` : `rgba(255, 255, 255, ${alpha})`;
+          ctx.lineWidth = body === selected ? 1.35 : 0.75;
+          ctx.beginPath();
+          ctx.moveTo(previous.x, previous.y);
+          ctx.lineTo(point.x, point.y);
+          ctx.stroke();
+        }
+        previous = point;
+      }
+    }
+
+    function drawTrail(body, pos) {
+      if (!ui.trails.checked || (ui.shipView.checked && !pos.visible)) return;
+      const span = Math.min(0.42, 72 / body.period);
+      ctx.beginPath();
+      let hasPoint = false;
+      for (let n = 0; n <= 70; n += 1) {
+        const pastDays = simDays - body.period * span * (n / 70);
+        const p = bodyPosition(body, pastDays);
+        if (ui.shipView.checked && !p.visible) continue;
+        if (!hasPoint) {
+          ctx.moveTo(p.x, p.y);
+          hasPoint = true;
+        }
+        else ctx.lineTo(p.x, p.y);
+      }
+      if (!hasPoint) return;
+      const gradient = ctx.createLinearGradient(pos.x, pos.y, centerX + cameraX, centerY + cameraY);
+      gradient.addColorStop(0, body.color);
+      gradient.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.strokeStyle = gradient;
+      ctx.globalAlpha = 0.46;
+      ctx.lineWidth = body === selected ? 2 : 1.2;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    const earthLand = [
+      [[-168, 72], [-142, 70], [-126, 56], [-121, 43], [-111, 31], [-97, 20], [-83, 18], [-72, 31], [-61, 46], [-64, 59], [-82, 72], [-120, 73]],
+      [[-82, 12], [-70, 10], [-55, -5], [-48, -20], [-54, -36], [-66, -55], [-76, -46], [-82, -24], [-88, -8]],
+      [[-54, 73], [-26, 74], [-22, 61], [-42, 59], [-58, 66]],
+      [[-18, 35], [12, 37], [35, 30], [50, 12], [44, -18], [31, -35], [18, -34], [6, -17], [-8, 6]],
+      [[-10, 71], [22, 69], [52, 58], [78, 55], [104, 45], [124, 34], [143, 48], [168, 58], [158, 35], [116, 18], [82, 8], [70, -8], [43, -10], [31, 6], [13, 20], [-5, 36]],
+      [[42, 30], [58, 26], [74, 18], [82, 9], [75, -2], [62, 5], [47, 13]],
+      [[96, 7], [119, 5], [128, -6], [114, -10], [101, -4]],
+      [[111, -10], [154, -13], [153, -34], [134, -43], [113, -32]],
+      [[-180, -62], [-120, -68], [-45, -64], [30, -69], [118, -64], [180, -68], [180, -90], [-180, -90]]
+    ];
+
+    function surfaceView(body) {
+      if (ui.sunView.checked) return { lon: -viewYaw, lat: -viewPitch };
+      if (ui.freeView.checked && body === selected) return { lon: -viewYaw, lat: -viewPitch };
+      if (ui.shipView.checked) return { lon: -ship.yaw, lat: -ship.pitch * 0.65 };
+      return { lon: 0, lat: 0 };
+    }
+
+    function surfacePoint(lon, lat, rotation, radius, view = { lon: 0, lat: 0 }) {
+      const lambda = lon * DEG + rotation + view.lon;
+      const phi = lat * DEG;
+      const cosPhi = Math.cos(phi);
+      const sx = cosPhi * Math.sin(lambda);
+      const sy = Math.sin(phi);
+      const sz = cosPhi * Math.cos(lambda);
+      const tiltCos = Math.cos(view.lat);
+      const tiltSin = Math.sin(view.lat);
+      const screenY = sy * tiltCos - sz * tiltSin;
+      const depth = sy * tiltSin + sz * tiltCos;
+      return { x: radius * sx, y: -radius * screenY, visible: depth > -0.08, depth };
+    }
+
+    function drawMapPolygon(points, rotation, radius, view) {
+      let started = false;
+      for (const [lon, lat] of points) {
+        const p = surfacePoint(lon, lat, rotation, radius, view);
+        if (!p.visible) {
+          started = false;
+          continue;
+        }
+        if (!started) {
+          ctx.moveTo(p.x, p.y);
+          started = true;
+        } else {
+          ctx.lineTo(p.x, p.y);
+        }
+      }
+    }
+
+    function drawSurfaceOval(lon, lat, w, h, angle, rotation, radius, view, fill, stroke = null, alpha = 1) {
+      const p = surfacePoint(lon, lat, rotation, radius, view);
+      if (!p.visible) return;
+      ctx.save();
+      ctx.globalAlpha *= alpha * Math.max(0.18, Math.min(1, p.depth + 0.28));
+      if (fill) ctx.fillStyle = fill;
+      if (stroke) ctx.strokeStyle = stroke;
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, radius * w, radius * h, angle, 0, Math.PI * 2);
+      if (fill) ctx.fill();
+      if (stroke) ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawCrater(seed, radius, view, tone = "rgba(35, 32, 30, 0.32)") {
+      const lon = ((seed * 137.51) % 360) - 180;
+      const lat = Math.sin(seed * 12.989) * 68;
+      const p = surfacePoint(lon, lat, 0, radius, view);
+      if (!p.visible) return;
+      const r = radius * (0.035 + ((seed * 17.17) % 1) * 0.075);
+      ctx.strokeStyle = tone;
+      ctx.lineWidth = Math.max(0.5, r * 0.18);
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y, r, r * 0.72, seed, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.beginPath();
+      ctx.arc(p.x - r * 0.24, p.y - r * 0.18, Math.max(0.4, r * 0.18), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function stripedSphere(body, radius, rotation) {
+      const view = surfaceView(body);
+      const gradient = ctx.createRadialGradient(-radius * 0.38, -radius * 0.45, radius * 0.1, 0, 0, radius);
+      gradient.addColorStop(0, "#ffffff");
+      gradient.addColorStop(0.12, body.color);
+      gradient.addColorStop(1, "#111521");
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.save();
+      ctx.clip();
+      if (body.id === "earth") {
+        const ocean = ctx.createRadialGradient(-radius * 0.3, -radius * 0.35, radius * 0.08, 0, 0, radius);
+        ocean.addColorStop(0, "#7ec8ff");
+        ocean.addColorStop(0.22, "#236ec9");
+        ocean.addColorStop(1, "#071e55");
+        ctx.fillStyle = ocean;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = "#3f9e62";
+        ctx.strokeStyle = "rgba(220, 236, 192, 0.18)";
+        ctx.lineWidth = Math.max(0.5, radius * 0.018);
+        for (const land of earthLand) {
+          ctx.beginPath();
+          drawMapPolygon(land, rotation * 0.22, radius, view);
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        ctx.globalAlpha = 0.22;
+        ctx.strokeStyle = "rgba(13, 38, 98, 0.6)";
+        ctx.lineWidth = Math.max(0.35, radius * 0.006);
+        for (let n = -5; n <= 5; n += 1) {
+          ctx.beginPath();
+          ctx.ellipse(Math.sin(rotation * 0.13 + n) * radius * 0.24, n * radius * 0.15, radius * 0.74, radius * 0.034, n * 0.22, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        ctx.globalAlpha = 0.34;
+        ctx.fillStyle = "#d7c58b";
+        for (const desert of [[18, 21, 30, 9], [45, 25, 19, 6], [135, -24, 16, 7], [-103, 38, 12, 5]]) {
+          drawSurfaceOval(desert[0], desert[1], desert[2] / 100, desert[3] / 100, 0.15, rotation * 0.22, radius, view, "#d7c58b", null, 0.62);
+        }
+
+        ctx.globalAlpha = 0.28;
+        ctx.strokeStyle = body.cloud;
+        ctx.lineWidth = Math.max(0.6, radius * 0.07);
+        for (let n = -2; n <= 2; n += 1) {
+          ctx.beginPath();
+          ctx.ellipse(Math.sin(rotation * 0.36 + n) * radius * 0.18, n * radius * 0.21, radius * 0.82, radius * 0.055, rotation * 0.12, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 0.8;
+        ctx.fillStyle = "rgba(255,255,255,0.82)";
+        for (const cap of [[0, -82, 80, 12], [0, 83, 44, 7]]) {
+          drawSurfaceOval(cap[0], cap[1], cap[2] / 100, cap[3] / 100, 0, rotation * 0.22, radius, view, "rgba(255,255,255,0.82)", null, 0.95);
+        }
+        for (const storm of [[-65, 22, 0.15, 0.045], [152, -34, 0.12, 0.04], [5, -45, 0.18, 0.035]]) {
+          drawSurfaceOval(storm[0], storm[1], storm[2], storm[3], 0.5, rotation * 0.32, radius, view, null, "rgba(255,255,255,0.55)", 0.7);
+        }
+      } else if (body.id === "mercury") {
+        for (let n = 1; n <= 46; n += 1) drawCrater(n * 0.37, radius, view);
+      } else if (body.id === "venus") {
+        ctx.globalAlpha = 0.38;
+        ctx.strokeStyle = "#fff0b7";
+        ctx.lineWidth = Math.max(0.8, radius * 0.06);
+        for (let n = -5; n <= 5; n += 1) {
+          ctx.beginPath();
+          ctx.ellipse(Math.sin(rotation * 0.14 + n) * radius * 0.1, n * radius * 0.14, radius * 0.95, radius * 0.075, rotation * 0.06 + n * 0.12, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        for (const swirl of [[-40, 30, 0.28, 0.055], [86, -18, 0.22, 0.05], [160, 8, 0.18, 0.045]]) {
+          drawSurfaceOval(swirl[0], swirl[1], swirl[2], swirl[3], 0.4, rotation * 0.12, radius, view, null, "rgba(255,246,190,0.42)", 0.75);
+        }
+      } else if (body.id === "mars") {
+        ctx.globalAlpha = 0.46;
+        ctx.fillStyle = "#5e332c";
+        for (const region of [[-35, -8, 46, 10], [55, 4, 32, 8], [118, -22, 22, 7], [-125, 12, 28, 9]]) {
+          drawSurfaceOval(region[0], region[1], region[2] / 100, region[3] / 100, 0.2, rotation * 0.35, radius, view, "#5e332c", null, 0.58);
+        }
+        ctx.globalAlpha = 0.86;
+        ctx.fillStyle = "#f3dfc5";
+        for (const cap of [[0, -76, 58, 9], [0, 75, 42, 7]]) {
+          drawSurfaceOval(cap[0], cap[1], cap[2] / 100, cap[3] / 100, 0, rotation * 0.35, radius, view, "#f3dfc5", null, 0.95);
+        }
+        drawSurfaceOval(-70, -14, 0.46, 0.028, -0.35, rotation * 0.35, radius, view, null, "rgba(52,28,23,0.45)", 1);
+        drawSurfaceOval(28, -4, 0.32, 0.02, 0.15, rotation * 0.35, radius, view, null, "rgba(84,41,31,0.38)", 1);
+        for (let n = 4; n <= 24; n += 1) drawCrater(n * 0.52, radius, view, "rgba(75, 42, 34, 0.24)");
+      } else if (body.bands) {
+        for (let n = -7; n <= 7; n += 1) {
+          const color = body.bands[Math.abs(n) % body.bands.length];
+          ctx.fillStyle = color;
+          ctx.globalAlpha = body.id === "jupiter" || body.id === "saturn" ? 0.72 : 0.34;
+          const y = n * radius * 0.13 + Math.sin(rotation + n) * radius * 0.025;
+          ctx.beginPath();
+          ctx.ellipse(0, y, radius * 1.18, radius * 0.05, Math.sin(rotation) * 0.08, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        if (body.id === "jupiter") {
+          ctx.globalAlpha = 0.82;
+          ctx.fillStyle = "#b55d43";
+          ctx.beginPath();
+          ctx.ellipse(radius * 0.42 * Math.sin(rotation * 0.6), radius * 0.22, radius * 0.25, radius * 0.13, -0.2, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (body.id === "neptune") {
+          ctx.globalAlpha = 0.45;
+          ctx.fillStyle = "#132e8d";
+          ctx.beginPath();
+          ctx.ellipse(radius * 0.28 * Math.sin(rotation * 0.45), radius * 0.16, radius * 0.22, radius * 0.1, -0.24, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (body.id === "uranus") {
+          ctx.globalAlpha = 0.18;
+          ctx.strokeStyle = "#e6ffff";
+          ctx.lineWidth = Math.max(0.7, radius * 0.035);
+          ctx.beginPath();
+          ctx.ellipse(0, 0, radius * 0.98, radius * 0.22, 0.15, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+      ctx.restore();
+      ctx.globalAlpha = 1;
+    }
+
+    function drawRing(radius, part = "full") {
+      ctx.save();
+      ctx.rotate(-0.33);
+      ctx.scale(1, 0.34);
+      const ring = ctx.createRadialGradient(0, 0, radius * 1.05, 0, 0, radius * 2.45);
+      ring.addColorStop(0, "rgba(255,255,255,0)");
+      ring.addColorStop(0.34, "rgba(218, 199, 150, 0.12)");
+      ring.addColorStop(0.48, "rgba(238, 219, 170, 0.76)");
+      ring.addColorStop(0.56, "rgba(40, 30, 24, 0.18)");
+      ring.addColorStop(0.72, "rgba(199, 176, 128, 0.52)");
+      ring.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.strokeStyle = ring;
+      ctx.lineWidth = Math.max(5, radius * 0.72);
+      ctx.beginPath();
+      if (part === "front") {
+        ctx.arc(0, 0, radius * 1.72, 0.08, Math.PI - 0.08);
+      } else {
+        ctx.arc(0, 0, radius * 1.72, 0, Math.PI * 2);
+      }
+      ctx.stroke();
+      ctx.lineWidth = Math.max(1, radius * 0.12);
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.beginPath();
+      ctx.arc(0, 0, radius * 2.08, part === "front" ? 0.18 : 0, part === "front" ? Math.PI - 0.18 : Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawPlanet(body, pos, time) {
+      if (ui.shipView.checked && !pos.visible) return;
+      const perspectiveScale = ui.shipView.checked ? Math.max(0.16, Math.min(18, pos.scale)) : 1;
+      const radius = planetRadius(body) * perspectiveScale;
+      const rotation = body.day ? (simDays / body.day) * Math.PI * 2 : time * 0.001;
+
+      ctx.save();
+      ctx.translate(pos.x, pos.y);
+
+      if (body.ring) drawRing(radius);
+      ctx.shadowColor = body.color;
+      ctx.shadowBlur = body === selected ? 22 : 8;
+      stripedSphere(body, radius, rotation);
+      ctx.shadowBlur = 0;
+
+      const lightAngle = Math.atan2(centerY + cameraY - pos.y, centerX + cameraX - pos.x);
+      const litX = Math.cos(lightAngle) * radius * 0.58;
+      const litY = Math.sin(lightAngle) * radius * 0.58;
+      const phase = ctx.createRadialGradient(litX, litY, radius * 0.08, -litX * 0.35, -litY * 0.35, radius * 1.42);
+      phase.addColorStop(0, "rgba(255,255,255,0.24)");
+      phase.addColorStop(0.34, "rgba(255,255,255,0)");
+      phase.addColorStop(0.68, "rgba(0,0,0,0.28)");
+      phase.addColorStop(1, "rgba(0,0,0,0.68)");
+      ctx.fillStyle = phase;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      const rim = ctx.createRadialGradient(0, 0, radius * 0.72, 0, 0, radius * 1.05);
+      rim.addColorStop(0, "rgba(255,255,255,0)");
+      rim.addColorStop(0.72, "rgba(255,255,255,0)");
+      rim.addColorStop(1, "rgba(255,255,255,0.22)");
+      ctx.fillStyle = rim;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      if (body.ring) drawRing(radius, "front");
+
+      if (body === selected) {
+        ctx.strokeStyle = "rgba(85, 194, 255, 0.95)";
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius + 5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = "rgba(85, 194, 255, 0.2)";
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(0, 0, radius + 9, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+
+      if (ui.labels.checked) {
+        ctx.save();
+        ctx.font = "12px Inter, system-ui, sans-serif";
+        ctx.textBaseline = "middle";
+        const label = body.name;
+        const labelX = pos.x + radius + 9;
+        const labelY = pos.y - radius - 6;
+        const labelWidth = ctx.measureText(label).width + 12;
+        ctx.fillStyle = body === selected ? "rgba(5, 18, 30, 0.72)" : "rgba(0, 0, 0, 0.34)";
+        ctx.strokeStyle = body === selected ? "rgba(85, 194, 255, 0.45)" : "rgba(255,255,255,0.1)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        roundedRectPath(labelX - 6, labelY - 9, labelWidth, 18, 5);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = body === selected ? "#e6f7ff" : "rgba(244,247,251,0.76)";
+        ctx.fillText(label, labelX, labelY);
+        ctx.restore();
+      }
+    }
+
+    function drawMoons(body, pos) {
+      if (!ui.moons.checked || !moons[body.id]) return;
+      const parentRadius = planetRadius(body);
+      for (const moon of moons[body.id]) {
+        const angle = ((simDays / moon.period) * 360 + moon.phase) * DEG;
+        const distance = Math.max(parentRadius + 10, orbitRadiusAU(moon.distance) * 14);
+        if (ui.shipView.checked) {
+          if (!pos.visible) continue;
+          const moonPos = projectPoint(
+            pos.worldX + Math.cos(angle) * distance,
+            pos.worldY + Math.sin(angle) * distance,
+            pos.worldZ + Math.sin(angle) * distance * 0.18
+          );
+          if (!moonPos.visible) continue;
+          ctx.strokeStyle = "rgba(255,255,255,0.10)";
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.moveTo(pos.x, pos.y);
+          ctx.lineTo(moonPos.x, moonPos.y);
+          ctx.stroke();
+          const r = Math.max(1.2, planetRadius({ radius: moon.radius }) * Math.max(0.14, Math.min(12, moonPos.scale)) * 0.55);
+          ctx.fillStyle = moon.color;
+          ctx.beginPath();
+          ctx.arc(moonPos.x, moonPos.y, r, 0, Math.PI * 2);
+          ctx.fill();
+          continue;
+        }
+        const mx = pos.x + Math.cos(angle) * distance;
+        const my = pos.y + Math.sin(angle) * distance * 0.42;
+        ctx.strokeStyle = "rgba(255,255,255,0.14)";
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.ellipse(pos.x, pos.y, distance, distance * 0.42, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        const r = Math.max(1.4, planetRadius({ radius: moon.radius }) * 0.55);
+        ctx.fillStyle = moon.color;
+        ctx.beginPath();
+        ctx.arc(mx, my, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function updateCamera(force = false) {
+      if (ui.shipView.checked || ui.freeView.checked) return;
+      if (!selected || (pointer && pointer.mode === "pan")) return;
+      const selectedPos = positions.get(selected.id);
+      if (!selectedPos) return;
+      const targetX = centerX - selectedPos.x;
+      const targetY = centerY - selectedPos.y;
+      const strength = force || ui.freeView.checked ? 1 : 0.12;
+      cameraX += targetX * strength;
+      cameraY += targetY * strength;
+    }
+
+    function lockSelectedToCenter() {
+      if (!selected) return;
+      if (ui.freeView.checked || ui.sunView.checked) {
+        cameraX = 0;
+        cameraY = 0;
+        updateViewCenter(true);
+      }
+      positions.clear();
+      for (const body of bodies) positions.set(body.id, bodyPosition(body, simDays));
+      updateCamera(true);
+      positions.clear();
+      for (const body of bodies) positions.set(body.id, bodyPosition(body, simDays));
+    }
+
+    function selectBody(body) {
+      selected = body;
+      if (ui.shipView.checked) {
+        const current = bodyPosition(body, simDays);
+        aimShipAt(current.worldX, current.worldY, current.worldZ);
+      } else if (ui.freeView.checked) {
+        viewCenterReady = true;
+      } else {
+        // Let the tracking camera ease toward the newly selected planet.
+      }
+      updateReadout();
+    }
+
+    function draw(time) {
+      const dt = Math.min(0.06, (time - lastTime) / 1000);
+      lastTime = time;
+      if (playing) simDays += dt * daysPerSecond();
+      updateShip(dt);
+      updateViewCenter();
+
+      drawStars(time);
+      positions.clear();
+      for (const body of bodies) positions.set(body.id, bodyPosition(body, simDays));
+      updateCamera();
+      positions.clear();
+      for (const body of bodies) positions.set(body.id, bodyPosition(body, simDays));
+
+      if (ui.trails.checked) {
+        for (const body of bodies) drawTrail(body, positions.get(body.id));
+      }
+      for (const body of bodies) drawOrbit(body);
+      drawSun(time);
+
+      const sorted = bodies
+        .map((body) => ({ body, pos: positions.get(body.id) }))
+        .sort((a, b) => a.pos.depth - b.pos.depth);
+      for (const item of sorted) drawMoons(item.body, item.pos);
+      for (const item of sorted) drawPlanet(item.body, item.pos, time);
+
+      updateHud();
+      requestAnimationFrame(draw);
+    }
+
+    function formatDate(days) {
+      return new Intl.DateTimeFormat("zh-CN", { dateStyle: "medium" }).format(new Date(J2000 + days * 86400000));
+    }
+
+    function updateHud() {
+      ui.speedValue.textContent = `${daysPerSecond().toLocaleString("zh-CN")} 天/秒`;
+      ui.zoomValue.textContent = `${Number(ui.zoom.value).toFixed(2)}x`;
+      ui.tiltValue.textContent = `${Math.round(Number(ui.tilt.value) * 100)}%`;
+      ui.planetScaleValue.textContent = `${Number(ui.planetScale.value).toFixed(2)}x`;
+      ui.shipSpeedValue.textContent = `${Number(ui.shipSpeed.value).toFixed(1)}x`;
+      ui.simDate.textContent = formatDate(simDays);
+      ui.focusName.textContent = ui.sunView.checked ? "太阳" : selected.name;
+      ui.viewMode.textContent = ui.shipView.checked ? "飞船" : ui.sunView.checked ? "太阳" : ui.freeView.checked ? "自由" : "追踪";
+      ui.scaleInfo.textContent = ui.shipView.checked
+        ? `飞船坐标 ${Math.round(ship.x)}, ${Math.round(ship.y)}, ${Math.round(ship.z)}`
+        : `1 AU ≈ ${Math.round(orbitRadiusAU(1)).toLocaleString("zh-CN")} px（压缩）`;
+    }
+
+    function updateReadout() {
+      ui.selectedName.textContent = selected.name;
+      ui.selectedSwatch.style.color = selected.color;
+      ui.selectedSwatch.style.background = selected.color;
+      const statRows = [
+        ["半长轴", `${selected.a.toFixed(3)} AU`],
+        ["偏心率", selected.e.toFixed(4)],
+        ["轨道倾角", `${selected.i.toFixed(2)}°`],
+        ["公转周期", `${Math.round(selected.period).toLocaleString("zh-CN")} 天`],
+        ["赤道半径", `${selected.radius.toFixed(2)} 地球`],
+        ["自转周期", `${Math.abs(selected.day).toFixed(2)} 天${selected.day < 0 ? " 逆行" : ""}`]
+      ];
+      ui.stats.innerHTML = statRows.map(([label, value]) => `<span>${label}<b>${value}</b></span>`).join("");
+      for (const pill of ui.planetList.children) {
+        pill.classList.toggle("active", pill.dataset.id === selected.id);
+      }
+    }
+
+    function makePlanetButtons() {
+      for (const body of bodies) {
+        const button = document.createElement("button");
+        button.className = "planet-pill";
+        button.dataset.id = body.id;
+        button.textContent = body.name;
+        button.title = `追踪${body.name}`;
+        button.addEventListener("click", () => selectBody(body));
+        ui.planetList.appendChild(button);
+      }
+      updateReadout();
+    }
+
+    function adjustSpeed(delta) {
+      ui.speed.value = String(Math.max(Number(ui.speed.min), Math.min(Number(ui.speed.max), Number(ui.speed.value) + delta)));
+      updateHud();
+    }
+
+    function createSpaceAudio() {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return null;
+      const context = new AudioContext();
+      const master = context.createGain();
+      master.gain.value = 0.0001;
+      master.connect(context.destination);
+
+      const compressor = context.createDynamicsCompressor();
+      compressor.threshold.value = -28;
+      compressor.knee.value = 18;
+      compressor.ratio.value = 4;
+      compressor.attack.value = 0.08;
+      compressor.release.value = 0.8;
+      compressor.connect(master);
+
+      const low = context.createOscillator();
+      const lowGain = context.createGain();
+      const lowFilter = context.createBiquadFilter();
+      low.type = "triangle";
+      low.frequency.value = 55;
+      lowGain.gain.value = 0.22;
+      lowFilter.type = "lowpass";
+      lowFilter.frequency.value = 340;
+      low.connect(lowFilter);
+      lowFilter.connect(lowGain);
+      lowGain.connect(compressor);
+
+      const mid = context.createOscillator();
+      const midGain = context.createGain();
+      const midFilter = context.createBiquadFilter();
+      mid.type = "sawtooth";
+      mid.frequency.value = 111;
+      midGain.gain.value = 0.055;
+      midFilter.type = "bandpass";
+      midFilter.frequency.value = 620;
+      midFilter.Q.value = 0.85;
+      mid.connect(midFilter);
+      midFilter.connect(midGain);
+      midGain.connect(compressor);
+
+      const noiseBuffer = context.createBuffer(1, context.sampleRate * 4, context.sampleRate);
+      const noiseData = noiseBuffer.getChannelData(0);
+      for (let i = 0; i < noiseData.length; i += 1) {
+        noiseData[i] = (Math.random() * 2 - 1) * (1 - i / noiseData.length * 0.25);
+      }
+      const noise = context.createBufferSource();
+      const noiseGain = context.createGain();
+      const noiseFilter = context.createBiquadFilter();
+      noise.buffer = noiseBuffer;
+      noise.loop = true;
+      noiseGain.gain.value = 0.038;
+      noiseFilter.type = "bandpass";
+      noiseFilter.frequency.value = 980;
+      noiseFilter.Q.value = 0.48;
+      noise.connect(noiseFilter);
+      noiseFilter.connect(noiseGain);
+      noiseGain.connect(compressor);
+
+      const lfo = context.createOscillator();
+      const lfoGain = context.createGain();
+      lfo.type = "sine";
+      lfo.frequency.value = 0.021;
+      lfoGain.gain.value = 220;
+      lfo.connect(lfoGain);
+      lfoGain.connect(midFilter.frequency);
+
+      const noiseLfo = context.createOscillator();
+      const noiseLfoGain = context.createGain();
+      noiseLfo.type = "sine";
+      noiseLfo.frequency.value = 0.013;
+      noiseLfoGain.gain.value = 420;
+      noiseLfo.connect(noiseLfoGain);
+      noiseLfoGain.connect(noiseFilter.frequency);
+
+      const shimmer = context.createOscillator();
+      const shimmerGain = context.createGain();
+      const shimmerFilter = context.createBiquadFilter();
+      shimmer.type = "sine";
+      shimmer.frequency.value = 740;
+      shimmerGain.gain.value = 0.018;
+      shimmerFilter.type = "bandpass";
+      shimmerFilter.frequency.value = 1180;
+      shimmerFilter.Q.value = 9;
+      shimmer.connect(shimmerFilter);
+      shimmerFilter.connect(shimmerGain);
+      shimmerGain.connect(compressor);
+
+      low.start();
+      mid.start();
+      noise.start();
+      lfo.start();
+      noiseLfo.start();
+      shimmer.start();
+
+      const audioState = {
+        context,
+        master,
+        compressor,
+        nodes: [low, mid, noise, lfo, noiseLfo, shimmer],
+        enabled: false,
+        timer: null
+      };
+
+      audioState.scheduleDistantTone = () => {
+        if (!audioState.enabled) return;
+        const now = context.currentTime;
+        const tone = context.createOscillator();
+        const toneGain = context.createGain();
+        const toneFilter = context.createBiquadFilter();
+        const options = [185, 247, 330, 392, 494, 660];
+        tone.type = Math.random() > 0.5 ? "sine" : "triangle";
+        tone.frequency.setValueAtTime(options[Math.floor(Math.random() * options.length)] * (Math.random() > 0.78 ? 2 : 1), now);
+        tone.detune.setValueAtTime((Math.random() * 16 - 8), now);
+        toneFilter.type = "bandpass";
+        toneFilter.frequency.value = 900 + Math.random() * 1500;
+        toneFilter.Q.value = 5 + Math.random() * 8;
+        toneGain.gain.setValueAtTime(0.0001, now);
+        toneGain.gain.exponentialRampToValueAtTime(0.045 + Math.random() * 0.035, now + 2.5 + Math.random() * 2);
+        toneGain.gain.exponentialRampToValueAtTime(0.0001, now + 9 + Math.random() * 7);
+        tone.connect(toneFilter);
+        toneFilter.connect(toneGain);
+        toneGain.connect(compressor);
+        tone.start(now);
+        tone.stop(now + 18);
+        audioState.timer = window.setTimeout(audioState.scheduleDistantTone, 5000 + Math.random() * 11000);
+      };
+
+      return audioState;
+    }
+
+    async function toggleSpaceAudio() {
+      if (!audio) audio = createSpaceAudio();
+      if (!audio) return;
+      if (audio.context.state === "suspended") await audio.context.resume();
+      const now = audio.context.currentTime;
+      audio.enabled = !audio.enabled;
+      audio.master.gain.cancelScheduledValues(now);
+      audio.master.gain.setTargetAtTime(audio.enabled ? 0.78 : 0.0001, now, audio.enabled ? 0.9 : 1.6);
+      if (audio.enabled) {
+        if (audio.timer) window.clearTimeout(audio.timer);
+        audio.scheduleDistantTone();
+        ui.sound.textContent = "静音";
+      } else {
+        if (audio.timer) window.clearTimeout(audio.timer);
+        ui.sound.textContent = "音效";
+      }
+      ui.sound.classList.toggle("active", audio.enabled);
+    }
+
+    ui.play.addEventListener("click", () => {
+      playing = !playing;
+      ui.play.textContent = playing ? "暂停" : "播放";
+      ui.play.classList.toggle("active", playing);
+    });
+    ui.slower.addEventListener("click", () => adjustSpeed(-0.25));
+    ui.faster.addEventListener("click", () => adjustSpeed(0.25));
+    ui.today.addEventListener("click", () => {
+      simDays = (Date.now() - J2000) / 86400000;
+    });
+    ui.sound.addEventListener("click", toggleSpaceAudio);
+    ui.trueSize.addEventListener("change", updateReadout);
+    ui.freeView.addEventListener("change", () => {
+      if (ui.freeView.checked) {
+        ui.shipView.checked = false;
+        ui.sunView.checked = false;
+        updateViewCenter(true);
+      } else {
+        viewCenterReady = false;
+      }
+      lockSelectedToCenter();
+      updateHud();
+    });
+    ui.sunView.addEventListener("change", () => {
+      if (ui.sunView.checked) {
+        ui.shipView.checked = false;
+        ui.freeView.checked = false;
+        cameraX = 0;
+        cameraY = 0;
+        updateViewCenter(true);
+      } else {
+        viewCenterReady = false;
+        lockSelectedToCenter();
+      }
+      updateHud();
+    });
+    ui.shipView.addEventListener("change", () => {
+      if (ui.shipView.checked) {
+        ui.freeView.checked = false;
+        ui.sunView.checked = false;
+        viewCenterReady = false;
+        placeShipNearSelected();
+      } else {
+        lockSelectedToCenter();
+      }
+      updateHud();
+    });
+    for (const input of [ui.speed, ui.zoom, ui.tilt, ui.planetScale, ui.shipSpeed]) {
+      input.addEventListener("input", updateHud);
+    }
+
+    canvas.addEventListener("pointerdown", (event) => {
+      const modelPan = (ui.freeView.checked || ui.sunView.checked) && (event.button === 2 || event.shiftKey);
+      pointer = {
+        id: event.pointerId,
+        x: event.clientX,
+        y: event.clientY,
+        mode: ui.shipView.checked ? "rotate" : (ui.freeView.checked || ui.sunView.checked) && !modelPan ? "orbit" : "pan",
+        distance: 0
+      };
+      canvas.setPointerCapture(event.pointerId);
+    });
+
+    canvas.addEventListener("pointermove", (event) => {
+      if (!pointer || pointer.id !== event.pointerId) return;
+      const dx = event.clientX - pointer.x;
+      const dy = event.clientY - pointer.y;
+      pointer.distance += Math.hypot(dx, dy);
+      if (pointer.mode === "rotate") {
+        ship.yaw += dx * 0.0048;
+        ship.pitch = Math.max(-1.36, Math.min(1.36, ship.pitch - dy * 0.0038));
+      } else if (pointer.mode === "orbit") {
+        viewYaw += dx * 0.006;
+        viewPitch = Math.max(-1.52, Math.min(1.52, viewPitch - dy * 0.004));
+      } else {
+        cameraX += dx;
+        cameraY += dy;
+      }
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
+    });
+
+    canvas.addEventListener("pointerup", () => {
+      suppressClick = pointer && pointer.distance > 6;
+      pointer = null;
+    });
+
+    canvas.addEventListener("wheel", (event) => {
+      event.preventDefault();
+      const next = Number(ui.zoom.value) * (event.deltaY > 0 ? 0.92 : 1.08);
+      ui.zoom.value = String(Math.max(Number(ui.zoom.min), Math.min(Number(ui.zoom.max), next)));
+      updateHud();
+    }, { passive: false });
+
+    canvas.addEventListener("contextmenu", (event) => {
+      if (ui.freeView.checked || ui.sunView.checked || ui.shipView.checked) event.preventDefault();
+    });
+
+    canvas.addEventListener("click", (event) => {
+      if (suppressClick) {
+        suppressClick = false;
+        return;
+      }
+      const candidates = [];
+      for (const body of bodies) {
+        const pos = positions.get(body.id);
+        if (!pos) continue;
+        const hit = Math.max(12, planetRadius(body) + 4);
+        const d = Math.hypot(event.clientX - pos.x, event.clientY - pos.y);
+        if (d <= hit) candidates.push({ body, d });
+      }
+      if (candidates.length) {
+        candidates.sort((a, b) => a.d - b.d);
+        selectBody(candidates[0].body);
+      }
+    });
+
+    addEventListener("keydown", (event) => {
+      const shipCodes = new Set(["KeyW", "KeyA", "KeyS", "KeyD", "KeyQ", "KeyE", "KeyR", "KeyF", "KeyC", "Space", "ControlLeft", "ControlRight", "ShiftLeft", "ShiftRight", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);
+      if (ui.shipView.checked && shipCodes.has(event.code)) {
+        event.preventDefault();
+        keys.add(event.code);
+        return;
+      }
+      if (event.code === "Space" || event.code === "KeyP") {
+        event.preventDefault();
+        ui.play.click();
+      }
+      if (event.key === "=" || event.key === "+") adjustSpeed(0.25);
+      if (event.key === "-" || event.key === "_") adjustSpeed(-0.25);
+    });
+
+    addEventListener("keyup", (event) => {
+      keys.delete(event.code);
+    });
+
+    addEventListener("resize", resize);
+    resize();
+    makePlanetButtons();
+    requestAnimationFrame(draw);
+  </script>
+</body>
+</html>
