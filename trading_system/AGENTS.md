@@ -60,6 +60,35 @@ Run from `E:\CODEX\trading_system` unless noted.
 
 There is currently no repository-provided npm lint/test/build command.
 
+## Git Workflow
+
+- The parent Git repository is `E:\CODEX`; this project lives under `trading_system/`.
+- Before editing, inspect:
+  ```powershell
+  git status
+  git branch
+  git remote -v
+  ```
+- Do not develop directly on `main`. Before a task, run:
+  ```powershell
+  git checkout main
+  git pull origin main
+  ```
+- Create a time-named branch from updated `main`:
+  - Feature branch: `feature/YYYYMMDD-HHMM-short-task`
+  - Bugfix branch: `fix/YYYYMMDD-HHMM-short-task`
+  - Use the local machine time in 24-hour format.
+- Commit messages must include the local timestamp:
+  - Format: `type: YYYY-MM-DD HH:mm short summary`
+  - Allowed types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `build`.
+- Use annotated tags only when the user explicitly asks to create or save a version:
+  - Tag format: `vYYYY.MM.DD-HHMM`
+  - If needed, append `-1`, `-2`, and so on for multiple tags in the same minute.
+  - Tag message format: `Version YYYY-MM-DD HH:mm - short summary`
+- Do not use `git add .`. Stage only reviewed files with explicit paths.
+- Never commit secrets, real account data, generated outputs, or local runtime files, including `.env`, `.env.local`, `*.env`, `dist/`, `build/`, `reports/`, `outputs/`, `__pycache__/`, `*.pyc`, and `*.log`.
+- Push only the current feature/fix branch with `git push -u origin <branch>`. Do not push directly to `main`, do not use `--force`, and do not use `reset`, `clean`, `rebase`, `stash`, or checkout operations that overwrite local changes unless explicitly requested.
+
 ## Code Style And Reuse
 
 - Keep the app dependency-light. Prefer existing plain JS/CSS patterns over introducing frameworks or heavy libraries.
