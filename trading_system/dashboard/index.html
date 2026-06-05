@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ETF 交易系统仪表盘</title>
+  <link rel="stylesheet" href="/styles.css?v=20260605-view-cache">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="side-rail" aria-label="主导航">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M4 18V9m5 9v-5m5 5v-8m5 8V5" />
+          <path d="M4 14l5-5 4 3 7-8" />
+          <path d="M16 4h4v4" />
+        </svg>
+      </div>
+      <nav>
+        <a class="nav-item active" href="#overview" data-route="overview">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><path d="M4 11.5 12 5l8 6.5" /><path d="M6.5 10.5V20h5v-5h3v5h5v-9.5" /></svg>
+          </span>
+          <span>总览</span>
+        </a>
+        <a class="nav-item" href="#signals" data-route="signals">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><path d="M6 4v16" /><path d="M18 4v16" /><path d="M3 8h6" /><path d="M15 8h6" /><path d="M9 16h12" /><path d="M3 16h6" /><circle cx="6" cy="8" r="1.8" /><circle cx="18" cy="16" r="1.8" /></svg>
+          </span>
+          <span>信号</span>
+        </a>
+        <a class="nav-item" href="#portfolio" data-route="portfolio">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><path d="M12 12V3" /><path d="M12 12 5 19" /><path d="M12 12h9" /><path d="M4 12a8 8 0 1 0 8-8" /></svg>
+          </span>
+          <span>组合</span>
+        </a>
+        <a class="nav-item" href="#monitor" data-route="monitor">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M7 15h2l2-4 2 6 2-5h2" /></svg>
+          </span>
+          <span>监控</span>
+        </a>
+        <a class="nav-item" href="#backtest" data-route="backtest">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><path d="M4 18h18" /><path d="M6 16l4-5 4 3 6-8" /><path d="M7 18v-3" /><path d="M12 18v-6" /><path d="M17 18v-5" /></svg>
+          </span>
+          <span>回测</span>
+        </a>
+        <a class="nav-item" href="#settings" data-route="settings">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" focusable="false"><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.4 1a7.3 7.3 0 0 0-2-1.2L14 3h-4l-.5 2.7a7.3 7.3 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.4-1a7.3 7.3 0 0 0 2 1.2L10 21h4l.5-2.7a7.3 7.3 0 0 0 2-1.2l2.4 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2Z" /></svg>
+          </span>
+          <span>设置</span>
+        </a>
+      </nav>
+    </aside>
+
+    <main class="dashboard">
+      <header class="page-header">
+        <div class="title-block">
+          <h1>ETF 交易系统仪表盘</h1>
+          <p id="pageSubtitle">今日信号总览</p>
+        </div>
+        <div class="header-meta">
+          <div class="meta-item">
+            <span>数据截至</span>
+            <strong>收盘后</strong>
+          </div>
+          <div class="meta-item">
+            <span>更新时间</span>
+            <strong id="updatedTime">读取中</strong>
+          </div>
+          <button id="refreshButton" class="icon-button" type="button" aria-label="刷新数据">刷新</button>
+        </div>
+      </header>
+
+      <section id="notice" class="notice" hidden></section>
+
+      <section class="summary-grid" id="summaryCards" aria-label="摘要指标">
+        <article class="summary-card">
+          <span>市场状态</span>
+          <strong>读取中</strong>
+        </article>
+      </section>
+
+      <section id="routeContent">
+        <section class="content-grid">
+          <div class="asset-column">
+            <div class="asset-groups">
+              <section class="asset-card">
+                <h2>读取中</h2>
+                <p class="loading-text">正在读取 ETF 数据...</p>
+              </section>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <script src="/app.js?v=20260605-view-cache"></script>
+</body>
+</html>
