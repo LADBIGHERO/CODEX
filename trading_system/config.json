@@ -1,0 +1,62 @@
+{
+  "account": {
+    "equity": null,
+    "high_watermark": null,
+    "cash_symbol": "SGOV",
+    "holdings_pct": {
+      "SPY": 0,
+      "QQQ": 0,
+      "GLD": 0,
+      "NVDA": 0,
+      "MSFT": 0,
+      "META": 0,
+      "JPM": 0,
+      "XOM": 0,
+      "LLY": 0,
+      "CAT": 0,
+      "GE": 0,
+      "WMT": 0,
+      "V": 0,
+      "SGOV": 100
+    }
+  },
+  "universe": {
+    "risk_assets": ["SPY", "QQQ"],
+    "defensive_assets": ["GLD"],
+    "cash_assets": ["SGOV"],
+    "stock_assets": ["NVDA", "MSFT", "META", "JPM", "XOM", "LLY", "CAT", "GE", "WMT", "V"],
+    "market_filters": ["SPY", "QQQ"]
+  },
+  "rules": {
+    "trend_sma_days": 200,
+    "short_sma_days": 20,
+    "support_sma_days": 50,
+    "momentum_days": 126,
+    "short_momentum_days": 63,
+    "risk_slots": 2,
+    "risk_slot_weight_pct": 30,
+    "defensive_weight_pct": 20,
+    "risk_off_defensive_weight_pct": 30,
+    "cash_floor_pct": 20,
+    "rebalance_threshold_pct": 5,
+    "drawdown_reduce_pct": 8,
+    "drawdown_cash_pct": 12
+  },
+  "price_behavior": {
+    "swing_window_days": 20,
+    "breakout_window_days": 60,
+    "breakout_hold_days": 3,
+    "breakout_buffer_pct": 0.2,
+    "failed_breakout_pct": 1.0,
+    "near_support_pct": 2.0,
+    "near_resistance_pct": 2.0,
+    "bearish_volume_multiplier": 1.2,
+    "long_body_ratio": 0.6
+  },
+  "execution": {
+    "buy_limit_buffer_pct": 0.2,
+    "sell_limit_buffer_pct": 0.2,
+    "order_session": "regular",
+    "allow_market_orders": false
+  }
+}
