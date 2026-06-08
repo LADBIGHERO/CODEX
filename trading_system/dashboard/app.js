@@ -1029,7 +1029,7 @@ function getFloatingMenuPosition(button) {
   const rect = button.getBoundingClientRect();
   const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 768;
-  const menuWidth = 190;
+  const menuWidth = 220;
   const menuHeight = 180;
   const gap = 8;
   const margin = 12;
@@ -1101,7 +1101,6 @@ function InstrumentDetailPanel(poolItem) {
           <h2>${item.symbol}</h2>
           <p>${poolItem.name}</p>
         </div>
-        <button class="detail-edit-button" type="button" data-detail-action="edit" data-detail-symbol="${escapeHtml(item.symbol)}">编辑</button>
       </div>
 
       <div class="detail-price-row">
