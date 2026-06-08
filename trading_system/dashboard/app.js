@@ -360,11 +360,11 @@ function renderOverviewSummary(items, snapshot) {
   const stats = deriveStats(items, snapshot);
   const updated = formatTime(snapshot.generated_at);
   const cards = [
-    { label: "市场状态", value: stats.regime, helper: "整体风险偏好积极", tone: "green", icon: "↗" },
-    { label: "新增信号", value: stats.buyCount, helper: `卖出信号 ${stats.sellCount}`, tone: "green", icon: "∿" },
-    { label: "风险警报", value: stats.riskAlertCount, helper: "需关注风险信号", tone: "red", icon: "!" },
-    { label: "待处理动作", value: stats.pendingCount, helper: "建议及时处理", tone: "amber", icon: "□" },
-    { label: "更新时间", value: "收盘后", helper: `${updated} 更新`, tone: "blue", icon: "◷" },
+    { label: "市场状态", value: stats.regime, helper: "整体风险偏好积极", tone: "green", icon: "trend" },
+    { label: "新增信号", value: stats.buyCount, helper: `卖出信号 ${stats.sellCount}`, tone: "green", icon: "signal" },
+    { label: "风险警报", value: stats.riskAlertCount, helper: "需关注风险信号", tone: "red", icon: "risk" },
+    { label: "待处理动作", value: stats.pendingCount, helper: "建议及时处理", tone: "amber", icon: "tasks" },
+    { label: "更新时间", value: "收盘后", helper: `${updated} 更新`, tone: "blue", icon: "clock" },
   ];
 
   document.getElementById("summaryCards").innerHTML = cards.map((card) => SummaryCard(card)).join("");
@@ -385,10 +385,56 @@ function renderSignalSummary(events) {
   document.getElementById("summaryCards").innerHTML = cards.map((card) => SummaryCard(card)).join("");
 }
 
+function SummaryIcon(icon) {
+  const icons = {
+    trend: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M4 17.5 9.2 12l3.6 3.5L20 7.5" />
+        <path d="M15.5 7.5H20V12" />
+        <path d="M4 7.5h6.5" />
+      </svg>
+    `,
+    signal: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M4 14.5c1.6-4.2 3.4-4.2 5 0s3.4 4.2 5 0 3.4-4.2 6 0" />
+        <path d="M4 18.5h16" />
+        <path d="M4 5.5h2.5" />
+        <path d="M17.5 5.5H20" />
+      </svg>
+    `,
+    risk: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M12 4.5 21 19H3L12 4.5Z" />
+        <path d="M12 9v4.2" />
+        <path d="M12 16.8h.01" />
+      </svg>
+    `,
+    tasks: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M7 7.5h10" />
+        <path d="M7 12h10" />
+        <path d="M7 16.5h6" />
+        <path d="M4 7.5h.01" />
+        <path d="M4 12h.01" />
+        <path d="M4 16.5h.01" />
+      </svg>
+    `,
+    clock: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <circle cx="12" cy="12" r="7.5" />
+        <path d="M12 8v4.4l3 1.8" />
+        <path d="M18.5 5.5 20 4" />
+        <path d="M5.5 5.5 4 4" />
+      </svg>
+    `,
+  };
+  return icons[icon] || escapeHtml(icon || "");
+}
+
 function SummaryCard({ label, value, helper, tone, icon }) {
   return `
     <article class="summary-card ${tone}">
-      <div class="summary-icon" aria-hidden="true">${escapeHtml(icon)}</div>
+      <div class="summary-icon" aria-hidden="true">${SummaryIcon(icon)}</div>
       <div>
         <span>${escapeHtml(label)}</span>
         <strong>${escapeHtml(value)}</strong>
