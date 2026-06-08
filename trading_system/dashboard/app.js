@@ -999,7 +999,6 @@ function InstrumentActionBadge(item) {
 function InstrumentRowMenu(item) {
   const actionItems = item.usage === "strategy"
     ? [
-        ["detail", "\u67e5\u770b\u8be6\u60c5"],
         ["edit", "\u7f16\u8f91\u914d\u7f6e"],
         ["pause_strategy", "\u6682\u505c\u7b56\u7565", true],
         ["separator"],
@@ -1007,7 +1006,6 @@ function InstrumentRowMenu(item) {
       ]
     : item.usage === "signal_monitoring"
       ? [
-          ["detail", "\u67e5\u770b\u8be6\u60c5"],
           ["edit", "\u7f16\u8f91\u914d\u7f6e"],
           ["to_watch", "\u6539\u4e3a\u4ec5\u89c2\u5bdf"],
           ["to_strategy", "\u7eb3\u5165\u7b56\u7565"],
@@ -1015,7 +1013,6 @@ function InstrumentRowMenu(item) {
           ["remove", "\u79fb\u51fa\u8d44\u4ea7\u6c60", false, true],
         ]
       : [
-          ["detail", "\u67e5\u770b\u8be6\u60c5"],
           ["edit", "\u7f16\u8f91\u914d\u7f6e"],
           ["to_monitor", "\u8f6c\u4e3a\u4fe1\u53f7\u76d1\u63a7"],
           ["to_strategy", "\u7eb3\u5165\u7b56\u7565"],
