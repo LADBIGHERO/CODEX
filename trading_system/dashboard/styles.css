@@ -244,6 +244,17 @@ button {
   font-weight: 900;
 }
 
+.summary-icon svg {
+  width: 29px;
+  height: 29px;
+  display: block;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 .summary-card.green .summary-icon { background: var(--green-soft); }
 .summary-card.red .summary-icon { background: var(--red-soft); color: var(--red); }
 .summary-card.amber .summary-icon { background: var(--amber-soft); color: var(--amber); }
