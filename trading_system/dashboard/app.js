@@ -375,11 +375,11 @@ function renderSignalSummary(events) {
   const pending = events.filter((event) => event.status === "pending" || event.status === "new").length;
   const risks = events.filter((event) => event.status === "warning" || event.type === "risk").length;
   const cards = [
-    { label: "今日新增", value: "—", helper: "缺少事件日期", tone: "green", icon: "∿" },
-    { label: "待确认", value: pending, helper: "当前快照派生", tone: "amber", icon: "□" },
-    { label: "已确认", value: confirmed, helper: "当前有效信号", tone: "green", icon: "✓" },
-    { label: "风险信号", value: risks, helper: "当前快照派生", tone: "red", icon: "!" },
-    { label: "今日失效", value: "—", helper: "缺少事件历史", tone: "slate", icon: "×" },
+    { label: "今日新增", value: "—", helper: "缺少事件日期", tone: "green", icon: "signal" },
+    { label: "待确认", value: pending, helper: "当前快照派生", tone: "amber", icon: "pending" },
+    { label: "已确认", value: confirmed, helper: "当前有效信号", tone: "green", icon: "check" },
+    { label: "风险信号", value: risks, helper: "当前快照派生", tone: "red", icon: "risk" },
+    { label: "今日失效", value: "—", helper: "缺少事件历史", tone: "slate", icon: "expired" },
   ];
 
   document.getElementById("summaryCards").innerHTML = cards.map((card) => SummaryCard(card)).join("");
@@ -389,21 +389,26 @@ function SummaryIcon(icon) {
   const icons = {
     trend: `
       <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-        <path d="M4 17.5 9.2 12l3.6 3.5L20 7.5" />
-        <path d="M15.5 7.5H20V12" />
-        <path d="M4 7.5h6.5" />
+        <path class="summary-icon-fill" d="M5 18.5 9.7 13l3.2 3.1L20 8.2v6.3c0 3.1-2.5 5.5-5.5 5.5h-7c-.9 0-1.8-.6-2.5-1.5Z" />
+        <path d="M4.5 16.8 9.2 12l3.6 3.5L20 7.5" />
+        <path d="M15.6 7.5H20V12" />
+        <path d="M4 19h16" />
       </svg>
     `,
     signal: `
       <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-        <path d="M4 14.5c1.6-4.2 3.4-4.2 5 0s3.4 4.2 5 0 3.4-4.2 6 0" />
-        <path d="M4 18.5h16" />
-        <path d="M4 5.5h2.5" />
-        <path d="M17.5 5.5H20" />
+        <path class="summary-icon-fill" d="M12 7.2a4.8 4.8 0 1 1 0 9.6 4.8 4.8 0 0 1 0-9.6Z" />
+        <path d="M8.7 13.8a4.5 4.5 0 0 1 0-3.6" />
+        <path d="M15.3 10.2a4.5 4.5 0 0 1 0 3.6" />
+        <path d="M5.8 16.8a8 8 0 0 1 0-9.6" />
+        <path d="M18.2 7.2a8 8 0 0 1 0 9.6" />
+        <path d="M12 14.8V19" />
+        <path d="M9.4 19h5.2" />
       </svg>
     `,
     risk: `
       <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M12 4.5 21 19H3L12 4.5Z" />
         <path d="M12 4.5 21 19H3L12 4.5Z" />
         <path d="M12 9v4.2" />
         <path d="M12 16.8h.01" />
@@ -411,20 +416,179 @@ function SummaryIcon(icon) {
     `,
     tasks: `
       <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-        <path d="M7 7.5h10" />
-        <path d="M7 12h10" />
-        <path d="M7 16.5h6" />
-        <path d="M4 7.5h.01" />
-        <path d="M4 12h.01" />
-        <path d="M4 16.5h.01" />
+        <path class="summary-icon-fill" d="M6 5.5h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2Z" />
+        <path d="M8.4 8.2h9" />
+        <path d="M8.4 12h9" />
+        <path d="M8.4 15.8h6" />
+        <path d="M5.6 8.2h.01" />
+        <path d="M5.6 12h.01" />
+        <path d="M5.6 15.8h.01" />
       </svg>
     `,
     clock: `
       <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
-        <circle cx="12" cy="12" r="7.5" />
+        <circle class="summary-icon-fill" cx="12" cy="12" r="7.5" />
         <path d="M12 8v4.4l3 1.8" />
+        <path d="M7.4 6.4a7.5 7.5 0 1 0 9.2 0" />
         <path d="M18.5 5.5 20 4" />
         <path d="M5.5 5.5 4 4" />
+      </svg>
+    `,
+    pending: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M6 5h12v14H6z" />
+        <path d="M7 5.5h10" />
+        <path d="M7 10h10" />
+        <path d="M7 14.5h6" />
+        <path d="M17.5 15.5 20 18l-2.5 2.5" />
+      </svg>
+    `,
+    check: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <circle class="summary-icon-fill" cx="12" cy="12" r="8" />
+        <path d="M7.5 12.2 10.5 15l6-6.3" />
+        <circle cx="12" cy="12" r="8" />
+      </svg>
+    `,
+    expired: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <circle class="summary-icon-fill" cx="12" cy="12" r="8" />
+        <path d="m8.5 8.5 7 7" />
+        <path d="m15.5 8.5-7 7" />
+        <circle cx="12" cy="12" r="8" />
+      </svg>
+    `,
+    monitor: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <rect class="summary-icon-fill" x="4" y="5" width="16" height="12" rx="2.2" />
+        <rect x="4" y="5" width="16" height="12" rx="2.2" />
+        <path d="M7 13h2.2l2-4 2.5 6 1.8-3H18" />
+        <path d="M10 20h4" />
+      </svg>
+    `,
+    volatility: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M4 15c2-5 4-5 6 0s4 5 6 0 3-5 4-1v5H4Z" />
+        <path d="M4 15c2-5 4-5 6 0s4 5 6 0 3-5 4-1" />
+        <path d="M4 19h16" />
+      </svg>
+    `,
+    target: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <circle class="summary-icon-fill" cx="12" cy="12" r="8" />
+        <circle cx="12" cy="12" r="8" />
+        <circle cx="12" cy="12" r="4.5" />
+        <path d="M12 9.5v2.5l2 1.2" />
+      </svg>
+    `,
+    data: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M5 5h14v14H5z" />
+        <path d="M5 5h14v14H5z" />
+        <path d="M8 15V9" />
+        <path d="M12 15v-4" />
+        <path d="M16 15V7.5" />
+      </svg>
+    `,
+    assetCount: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M6 6h5v5H6zM13 6h5v5h-5zM6 13h5v5H6zM13 13h5v5h-5z" />
+        <path d="M6 6h5v5H6z" />
+        <path d="M13 6h5v5h-5z" />
+        <path d="M6 13h5v5H6z" />
+        <path d="M13 13h5v5h-5z" />
+      </svg>
+    `,
+    return: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M5 17 9 12l4 3 6-8v11H5z" />
+        <path d="M5 17 9 12l4 3 6-8" />
+        <path d="M5 19h14" />
+        <path d="M17 7h2v2" />
+      </svg>
+    `,
+    drawdown: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M5 7l5 5 3-2.5 6 6.5v3H5z" />
+        <path d="M5 7l5 5 3-2.5 6 6.5" />
+        <path d="M19 12v4h-4" />
+        <path d="M5 19h14" />
+      </svg>
+    `,
+    scale: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M7 9h10l-3 8H10Z" />
+        <path d="M12 5v14" />
+        <path d="M6 8h12" />
+        <path d="M8 8 5 14h6Z" />
+        <path d="M16 8 13 14h6Z" />
+      </svg>
+    `,
+    benchmark: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M12 4 20 12l-8 8-8-8Z" />
+        <path d="M12 4 20 12l-8 8-8-8Z" />
+        <path d="M9 12h6" />
+        <path d="M12 9v6" />
+      </svg>
+    `,
+    portfolio: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <circle class="summary-icon-fill" cx="12" cy="12" r="8" />
+        <path d="M12 4v8l6 4" />
+        <path d="M12 12 6 17" />
+        <path d="M12 12h8" />
+        <circle cx="12" cy="12" r="8" />
+      </svg>
+    `,
+    shield: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M12 4 19 7v5c0 4-2.8 6.5-7 8-4.2-1.5-7-4-7-8V7Z" />
+        <path d="M12 4 19 7v5c0 4-2.8 6.5-7 8-4.2-1.5-7-4-7-8V7Z" />
+        <path d="m8.5 12 2.2 2.2 4.8-5" />
+      </svg>
+    `,
+    wallet: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M4 7h15a2 2 0 0 1 2 2v8H4Z" />
+        <path d="M4 7h15a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4Z" />
+        <path d="M17 12h4" />
+        <path d="M7 7V5h9" />
+      </svg>
+    `,
+    balance: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M6 6h12v12H6z" />
+        <path d="M6 16h12" />
+        <path d="M8 16V9" />
+        <path d="M12 16v-5" />
+        <path d="M16 16V7" />
+      </svg>
+    `,
+    link: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M8 7h8v10H8z" />
+        <path d="M9.5 14.5 8 16a3.5 3.5 0 0 1-5-5l2-2a3.5 3.5 0 0 1 5 0" />
+        <path d="M14.5 9.5 16 8a3.5 3.5 0 0 1 5 5l-2 2a3.5 3.5 0 0 1-5 0" />
+        <path d="M9 15 15 9" />
+      </svg>
+    `,
+    version: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M5 5h14v14H5z" />
+        <path d="M7 6h10" />
+        <path d="M7 11h10" />
+        <path d="M7 16h6" />
+        <path d="M17 16h.01" />
+      </svg>
+    `,
+    changes: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path class="summary-icon-fill" d="M6 5h12v14H6z" />
+        <path d="M8 7h8" />
+        <path d="M8 12h8" />
+        <path d="M8 17h4" />
+        <path d="m15 16 1.5 1.5L20 14" />
       </svg>
     `,
   };
@@ -1025,7 +1189,6 @@ function InstrumentActionBadge(item) {
 function InstrumentRowMenu(item) {
   const actionItems = item.usage === "strategy"
     ? [
-        ["detail", "\u67e5\u770b\u8be6\u60c5"],
         ["edit", "\u7f16\u8f91\u914d\u7f6e"],
         ["pause_strategy", "\u6682\u505c\u7b56\u7565", true],
         ["separator"],
@@ -1033,7 +1196,6 @@ function InstrumentRowMenu(item) {
       ]
     : item.usage === "signal_monitoring"
       ? [
-          ["detail", "\u67e5\u770b\u8be6\u60c5"],
           ["edit", "\u7f16\u8f91\u914d\u7f6e"],
           ["to_watch", "\u6539\u4e3a\u4ec5\u89c2\u5bdf"],
           ["to_strategy", "\u7eb3\u5165\u7b56\u7565"],
@@ -1041,7 +1203,6 @@ function InstrumentRowMenu(item) {
           ["remove", "\u79fb\u51fa\u8d44\u4ea7\u6c60", false, true],
         ]
       : [
-          ["detail", "\u67e5\u770b\u8be6\u60c5"],
           ["edit", "\u7f16\u8f91\u914d\u7f6e"],
           ["to_monitor", "\u8f6c\u4e3a\u4fe1\u53f7\u76d1\u63a7"],
           ["to_strategy", "\u7eb3\u5165\u7b56\u7565"],
@@ -2542,11 +2703,11 @@ function renderMonitoringSummary(items, snapshot, monitorItems) {
   const firstRisk = riskItems[0] ? `${riskItems[0].symbol} ${riskItems[0].conditionLabel}` : "当前无触发风险";
 
   const cards = [
-    { label: "监控状态", value: monitorStatus, helper: errors > 0 ? "部分数据异常" : "收盘后日频监控", tone: monitorTone, icon: "◎" },
-    { label: "价格异动", value: "待接入", helper: "缺少波动规则", tone: "slate", icon: "∿" },
-    { label: "关键位接近", value: nearItems.length, helper: `阻力 ${resistanceCount} · 支撑 ${supportCount} · 均线 ${maCount}`, tone: nearItems.length ? "amber" : "green", icon: "⊕" },
-    { label: "风险警报", value: riskItems.length, helper: firstRisk, tone: riskItems.length ? "red" : "green", icon: "!" },
-    { label: "数据状态", value: dataStatus, helper: `${updated} 更新`, tone: dataTone, icon: "◷" },
+    { label: "监控状态", value: monitorStatus, helper: errors > 0 ? "部分数据异常" : "收盘后日频监控", tone: monitorTone, icon: "monitor" },
+    { label: "价格异动", value: "待接入", helper: "缺少波动规则", tone: "slate", icon: "volatility" },
+    { label: "关键位接近", value: nearItems.length, helper: `阻力 ${resistanceCount} · 支撑 ${supportCount} · 均线 ${maCount}`, tone: nearItems.length ? "amber" : "green", icon: "target" },
+    { label: "风险警报", value: riskItems.length, helper: firstRisk, tone: riskItems.length ? "red" : "green", icon: "risk" },
+    { label: "数据状态", value: dataStatus, helper: `${updated} 更新`, tone: dataTone, icon: "data" },
   ];
 
   document.getElementById("summaryCards").innerHTML = cards.map((card) => SummaryCard(card)).join("");
@@ -2745,11 +2906,11 @@ function buildBacktestModel(snapshot) {
 
 function renderBacktestSummary(model) {
   const cards = [
-    { label: "累计收益", value: "待计算", helper: "策略总回报", tone: "slate", icon: "▥" },
-    { label: "年化收益", value: "待计算", helper: "CAGR", tone: "slate", icon: "↗" },
-    { label: "最大回撤", value: "待计算", helper: "历史最大回撤", tone: "slate", icon: "!" },
-    { label: "夏普比率", value: "待计算", helper: "风险调整后收益", tone: "blue", icon: "⚖" },
-    { label: "相对基准", value: "待计算", helper: `相对 ${model.benchmarkSymbol} 超额`, tone: "amber", icon: "◇" },
+    { label: "累计收益", value: "待计算", helper: "策略总回报", tone: "slate", icon: "return" },
+    { label: "年化收益", value: "待计算", helper: "CAGR", tone: "slate", icon: "trend" },
+    { label: "最大回撤", value: "待计算", helper: "历史最大回撤", tone: "slate", icon: "drawdown" },
+    { label: "夏普比率", value: "待计算", helper: "风险调整后收益", tone: "blue", icon: "scale" },
+    { label: "相对基准", value: "待计算", helper: `相对 ${model.benchmarkSymbol} 超额`, tone: "amber", icon: "benchmark" },
   ];
 
   document.getElementById("summaryCards").innerHTML = cards.map((card) => SummaryCard(card)).join("");
@@ -3116,35 +3277,35 @@ function renderPortfolioSummary(model) {
       value: model.portfolioStatus.text,
       helper: model.portfolioStatus.helper,
       tone: model.portfolioStatus.tone,
-      icon: "◈",
+      icon: "portfolio",
     },
     {
       label: "风险资产",
       value: `${model.riskPassed} / ${model.riskAssets.length || 3} 通过`,
       helper: "股票趋势整体健康",
       tone: "green",
-      icon: "✓",
+      icon: "check",
     },
     {
       label: "防御能力",
       value: model.defenseAbility.text,
       helper: model.defenseAbility.helper,
       tone: model.defenseAbility.tone,
-      icon: "⬡",
+      icon: "shield",
     },
     {
       label: "集中风险",
       value: model.concentrationText,
       helper: model.concentrationHelper,
       tone: "amber",
-      icon: "!",
+      icon: "risk",
     },
     {
       label: "关注事项",
       value: model.attentionCount,
       helper: "需关注结构问题",
       tone: "amber",
-      icon: "□",
+      icon: "tasks",
     },
   ];
   document.getElementById("summaryCards").innerHTML = cards.map((card) => SummaryCard(card)).join("");
@@ -3202,35 +3363,35 @@ function renderActualAccountSummary() {
       value: typeof totalValue === "number" ? formatUsdt(totalValue) : "待同步",
       helper: binanceAccount?.hasUnpricedAssets ? "仅汇总可估值资产" : "Binance Spot",
       tone: typeof totalValue === "number" ? "green" : "slate",
-      icon: "◎",
+      icon: "wallet",
     },
     {
       label: "可用余额",
       value: typeof availableValue === "number" ? formatUsdt(availableValue) : "—",
       helper: "按可估值资产汇总",
       tone: typeof availableValue === "number" ? "blue" : "slate",
-      icon: "◌",
+      icon: "balance",
     },
     {
       label: "持有资产数量",
       value: String(assetCount),
       helper: "非零余额资产",
       tone: binanceStatus.configured ? "green" : "slate",
-      icon: "▣",
+      icon: "assetCount",
     },
     {
       label: "数据来源",
       value: "Binance Spot",
       helper: "只读账户余额",
       tone: "blue",
-      icon: "🔗",
+      icon: "link",
     },
     {
       label: "最近同步",
       value: binanceAccount?.lastSyncedAt ? formatDateTime(binanceAccount.lastSyncedAt) : "—",
       helper: "手动刷新",
       tone: binanceAccount?.lastSyncedAt ? "green" : "slate",
-      icon: "◷",
+      icon: "clock",
     },
   ];
   document.getElementById("summaryCards").innerHTML = cards.map((card) => SummaryCard(card)).join("");
@@ -3709,16 +3870,16 @@ function renderSettingsSummary(model) {
     ? (binanceError ? "red" : "green")
     : "slate";
   const cards = [
-    { label: "当前策略版本", value: "未启用", helper: "未启用版本管理", tone: "slate", icon: "☷" },
-    { label: "资产池", value: `${model.assetCount} 只`, helper: model.assetCount ? "当前配置资产" : "未读取配置", tone: "blue", icon: "▣" },
-    { label: "数据状态", value: model.dataStatus, helper: model.dataHelper, tone: model.dataTone, icon: "◇" },
-    { label: "账户连接", value: accountValue, helper: "Binance Spot 只读", tone: accountTone, icon: "🔗" },
+    { label: "当前策略版本", value: "未启用", helper: "未启用版本管理", tone: "slate", icon: "version" },
+    { label: "资产池", value: `${model.assetCount} 只`, helper: model.assetCount ? "当前配置资产" : "未读取配置", tone: "blue", icon: "assetCount" },
+    { label: "数据状态", value: model.dataStatus, helper: model.dataHelper, tone: model.dataTone, icon: "data" },
+    { label: "账户连接", value: accountValue, helper: "Binance Spot 只读", tone: accountTone, icon: "link" },
     {
       label: "待发布变更",
       value: model.changes.length ? `${model.changes.length} 项` : "无草稿",
       helper: model.changes.length ? "本地草稿预览" : "未启用发布流程",
       tone: model.changes.length ? "amber" : "slate",
-      icon: "□",
+      icon: "changes",
     },
   ];
 
