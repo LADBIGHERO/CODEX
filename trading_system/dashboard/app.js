@@ -804,8 +804,10 @@ function renderOverview(items) {
       ${AssetRightRail(selectedPoolItem)}
     </section>
     ${RemoveInstrumentConfirmDialog(poolItems.find((item) => item.symbol === removeConfirmInstrumentId && item.groupId === removeConfirmGroupId) || poolItems.find((item) => item.symbol === removeConfirmInstrumentId) || defaultPoolItemFromSnapshot(removeConfirmInstrumentId))}
+    <div id="instrumentMenuPortal" class="instrument-menu-portal"></div>
   `;
   renderAssetPoolGroups(poolItems);
+  renderInstrumentRowMenuPortal(poolItems);
   bindOverviewRowEvents();
 }
 
@@ -914,6 +916,7 @@ function AssetGroupCard(group, items, maxAbsMomentum) {
 }
 
 function AssetGroupTable(items, maxAbsMomentum) {
+  const hasOpenMenu = items.some((item) => openMenuInstrumentId === item.id);
   const rows = items.map((item) => {
     const raw = item.raw;
     const menuOpen = openMenuInstrumentId === item.id;
@@ -934,14 +937,13 @@ function AssetGroupTable(items, maxAbsMomentum) {
         <td>${InstrumentActionBadge(item)}</td>
         <td class="row-menu-cell">
           <button class="row-more-button" type="button" data-more-symbol="${raw.symbol}" data-more-group="${escapeHtml(item.groupId)}" aria-expanded="${menuOpen ? "true" : "false"}" title="更多操作">···</button>
-          ${menuOpen ? InstrumentRowMenu(item) : ""}
         </td>
       </tr>
     `;
   }).join("");
 
   return `
-    <div class="group-table-wrap">
+    <div class="group-table-wrap ${hasOpenMenu ? "menu-active" : ""}">
       <table class="asset-table asset-pool-table">
         <thead>
           <tr>
@@ -964,6 +966,24 @@ function AssetGroupTable(items, maxAbsMomentum) {
       </table>
     </div>
   `;
+}
+
+function renderInstrumentRowMenuPortal(poolItems) {
+  const portal = document.getElementById("instrumentMenuPortal");
+  if (!portal) return;
+  if (!openMenuInstrumentId) {
+    portal.innerHTML = "";
+    return;
+  }
+
+  const item = poolItems.find((poolItem) => poolItem.id === openMenuInstrumentId);
+  if (!item || !openMenuPosition) {
+    closeInstrumentRowMenu();
+    portal.innerHTML = "";
+    return;
+  }
+
+  portal.innerHTML = InstrumentRowMenu(item);
 }
 
 function UsageBadge(usage) {
