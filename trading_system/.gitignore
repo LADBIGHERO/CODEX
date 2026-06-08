@@ -11,6 +11,7 @@ outputs/
 .env
 .env.*
 !.env.example
+asset_pool.json
 manual_holdings.json
 binance api.txt
 dashboard_view_cache.json

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "id": "core_strategy",
+      "name": "Core Strategy Assets",
+      "symbols": [
+        "QQQ",
+        "SPY",
+        "GLD",
+        "SGOV"
+      ],
+      "locked": false
+    },
+    {
+      "id": "stock_watchlist",
+      "name": "Stock Watchlist",
+      "symbols": [
+        "NVDA",
+        "MSFT",
+        "META",
+        "JPM",
+        "XOM",
+        "LLY",
+        "CAT",
+        "GE",
+        "WMT",
+        "V"
+      ],
+      "locked": false
+    }
+  ],
+  "instruments": {}
+}

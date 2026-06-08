@@ -4243,7 +4243,16 @@ function dashboardCachePayload(snapshot = lastSnapshot) {
     manualHoldingsConfig,
     manualHoldingsCapabilities,
     binanceStatus,
-    binanceAccount,
+    binanceAccountSummary: summarizeBinanceAccountForCache(binanceAccount),
+  };
+}
+
+function summarizeBinanceAccountForCache(account) {
+  if (!plainObject(account)) return null;
+  return {
+    lastSyncedAt: account.lastSyncedAt || null,
+    assetCount: Array.isArray(account.assets) ? account.assets.length : 0,
+    hasUnpricedAssets: Boolean(account.hasUnpricedAssets),
   };
 }
 
@@ -4349,7 +4358,13 @@ function restoreDashboardCache(payload) {
   if (plainObject(payload.binanceStatus)) {
     binanceStatus = { ...binanceStatus, ...payload.binanceStatus };
   }
-  binanceAccount = plainObject(payload.binanceAccount) ? payload.binanceAccount : null;
+  if (plainObject(payload.binanceAccountSummary)) {
+    binanceStatus = {
+      ...binanceStatus,
+      lastSyncedAt: payload.binanceAccountSummary.lastSyncedAt || binanceStatus.lastSyncedAt || null,
+    };
+  }
+  binanceAccount = null;
   binanceError = "";
   render(payload.snapshot, { cache: "restored" });
   setNotice("已先显示上次关闭前的画面，正在后台刷新最新数据。", "neutral");

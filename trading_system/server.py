@@ -108,6 +108,21 @@ def empty_manual_holdings_config() -> dict[str, object]:
     return {"version": MANUAL_HOLDINGS_VERSION, "holdings": {}}
 
 
+def sanitize_dashboard_view_cache(cache: object) -> dict[str, object] | None:
+    if not isinstance(cache, dict):
+        return None
+    sanitized = copy.deepcopy(cache)
+    account = sanitized.pop("binanceAccount", None)
+    if "binanceAccountSummary" not in sanitized and isinstance(account, dict):
+        assets = account.get("assets")
+        sanitized["binanceAccountSummary"] = {
+            "lastSyncedAt": account.get("lastSyncedAt"),
+            "assetCount": len(assets) if isinstance(assets, list) else 0,
+            "hasUnpricedAssets": bool(account.get("hasUnpricedAssets")),
+        }
+    return sanitized
+
+
 def clean_optional_float(value: object) -> float | None:
     if value is None or value == "":
         return None
@@ -1044,16 +1059,19 @@ class DashboardServer(ThreadingHTTPServer):
             return None
         with self.ui_cache_path.open("r", encoding="utf-8") as f:
             payload = json.load(f)
-        return payload if isinstance(payload, dict) else None
+        return sanitize_dashboard_view_cache(payload)
 
     def save_dashboard_view_cache(self, cache: dict[str, object]) -> dict[str, object]:
+        sanitized = sanitize_dashboard_view_cache(cache)
+        if sanitized is None:
+            raise ValueError("UI cache must be an object")
         self.ui_cache_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self.ui_cache_path.with_suffix(self.ui_cache_path.suffix + ".tmp")
         with temp_path.open("w", encoding="utf-8") as f:
-            json.dump(cache, f, ensure_ascii=False, indent=2)
+            json.dump(sanitized, f, ensure_ascii=False, indent=2)
             f.write("\n")
         os.replace(temp_path, self.ui_cache_path)
-        return cache
+        return sanitized
 
     def status_payload(self) -> dict[str, object]:
         port = self.server_address[1]
