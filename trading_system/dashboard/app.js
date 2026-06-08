@@ -1130,19 +1130,19 @@ function AssetGroupTable(items, maxAbsMomentum) {
     const selected = raw.symbol === selectedSymbol && item.groupId === selectedGroupId && (rightRailMode === "detail" || rightRailMode === "edit") ? "selected" : "";
     return `
       <tr class="${selected} ${menuOpen ? "menu-open" : ""}" data-symbol="${raw.symbol}" data-group-id="${escapeHtml(item.groupId)}" tabindex="0">
-        <td class="symbol-cell">${raw.symbol}</td>
-        <td>${escapeHtml(item.typeLabel)}</td>
-        <td>${UsageBadge(item.usage)}</td>
-        <td>${StatusBadge(item.state)}</td>
-        <td>${price(raw.current_price ?? raw.close)}</td>
-        <td>${AccountHoldingCell(raw.symbol, raw.current_price ?? raw.close)}</td>
-        <td>${AccountValueCell(raw.symbol, raw.current_price ?? raw.close)}</td>
-        <td>${AccountPnlCell(raw.symbol, raw.current_price ?? raw.close)}</td>
-        <td class="${changeClass(raw.day_change_pct)}">${pct(raw.day_change_pct, { sign: true })}</td>
-        <td>${MomentumBar(raw.momentum_126_pct, maxAbsMomentum)}</td>
-        <td>${escapeHtml(item.keyPrompt)}</td>
-        <td>${InstrumentActionBadge(item)}</td>
-        <td class="row-menu-cell">
+        <td class="symbol-cell asset-col-symbol">${raw.symbol}</td>
+        <td class="asset-col-type asset-col-optional">${escapeHtml(item.typeLabel)}</td>
+        <td class="asset-col-usage asset-col-optional">${UsageBadge(item.usage)}</td>
+        <td class="asset-col-state">${StatusBadge(item.state)}</td>
+        <td class="asset-col-price">${price(raw.current_price ?? raw.close)}</td>
+        <td class="asset-col-holding">${AccountHoldingCell(raw.symbol, raw.current_price ?? raw.close)}</td>
+        <td class="asset-col-value">${AccountValueCell(raw.symbol, raw.current_price ?? raw.close)}</td>
+        <td class="asset-col-pnl">${AccountPnlCell(raw.symbol, raw.current_price ?? raw.close)}</td>
+        <td class="asset-col-day ${changeClass(raw.day_change_pct)}">${pct(raw.day_change_pct, { sign: true })}</td>
+        <td class="asset-col-momentum asset-col-optional">${MomentumBar(raw.momentum_126_pct, maxAbsMomentum)}</td>
+        <td class="asset-col-prompt asset-col-optional">${escapeHtml(item.keyPrompt)}</td>
+        <td class="asset-col-action">${InstrumentActionBadge(item)}</td>
+        <td class="row-menu-cell asset-col-menu">
           <button class="row-more-button" type="button" data-more-symbol="${raw.symbol}" data-more-group="${escapeHtml(item.groupId)}" aria-expanded="${menuOpen ? "true" : "false"}" title="更多操作">···</button>
           ${menuOpen ? InstrumentRowMenu(item) : ""}
         </td>
@@ -1303,16 +1303,18 @@ function InstrumentDetailPanel(poolItem) {
 
   return `
     <section class="instrument-detail-panel">
-      <div class="detail-header">
+      <div class="detail-header detail-compact-header">
         <div>
           <h2>${item.symbol}</h2>
           <p>${poolItem.name}</p>
+        </div>
+        <div class="detail-header-status">
+          ${InstrumentActionBadge(poolItem)}
         </div>
       </div>
 
       <div class="detail-price-row">
         <strong>${price(item.current_price ?? item.close)}</strong>
-        ${InstrumentActionBadge(poolItem)}
       </div>
       <div class="detail-subrow">
         <span>今日涨跌</span>
@@ -1321,7 +1323,7 @@ function InstrumentDetailPanel(poolItem) {
 
       ${ManualHoldingPanel(poolItem)}
 
-      <dl class="detail-list">
+      <dl class="detail-list detail-list-compact">
         <div><dt>所属分组</dt><dd>${escapeHtml(poolItem.groupName)}</dd></div>
         <div><dt>用途</dt><dd>${UsageBadge(poolItem.usage)}</dd></div>
         <div><dt>系统角色</dt><dd>${escapeHtml(poolItem.roleLabel)}</dd></div>
@@ -3912,13 +3914,26 @@ function SettingsCategoryNav() {
       <div class="settings-category-list">
         ${settingsCategories.map((category) => `
           <button class="settings-category-item ${category.key === selectedSettingsCategory ? "active" : ""}" type="button" data-settings-category="${category.key}">
-            <span aria-hidden="true">${escapeHtml(category.icon)}</span>
+            <span aria-hidden="true">${SettingsCategoryIcon(category.key)}</span>
             ${escapeHtml(category.label)}
           </button>
         `).join("")}
       </div>
     </aside>
   `;
+}
+
+function SettingsCategoryIcon(key) {
+  const icons = {
+    strategy: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M5 7h14" /><path d="M5 12h14" /><path d="M5 17h14" /><path d="M9 5v4" /><path d="M15 10v4" /><path d="M11 15v4" /></svg>`,
+    assets: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M6 6h5v5H6z" /><path d="M13 6h5v5h-5z" /><path d="M6 13h5v5H6z" /><path d="M13 13h5v5h-5z" /></svg>`,
+    data: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M5 19h14" /><path d="M8 16v-6" /><path d="M12 16V7" /><path d="M16 16v-4" /></svg>`,
+    connections: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M9.5 14.5 8 16a3.5 3.5 0 0 1-5-5l2-2a3.5 3.5 0 0 1 5 0" /><path d="M14.5 9.5 16 8a3.5 3.5 0 0 1 5 5l-2 2a3.5 3.5 0 0 1-5 0" /><path d="M9 15 15 9" /></svg>`,
+    alerts: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M12 4 20 18H4z" /><path d="M12 9v4" /><path d="M12 16h.01" /></svg>`,
+    appearance: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M5 6h14" /><path d="M7 10h10" /><path d="M5 14h14" /><path d="M9 18h6" /></svg>`,
+    version_security: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M12 4 19 7v5c0 4-2.8 6.5-7 8-4.2-1.5-7-4-7-8V7z" /><path d="m8.5 12 2.2 2.2 4.8-5" /></svg>`,
+  };
+  return icons[key] || SummaryIcon("version");
 }
 
 function SettingsMainPanel(model, items, snapshot) {
