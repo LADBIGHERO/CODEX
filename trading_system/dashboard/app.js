@@ -1308,7 +1308,6 @@ function InstrumentDetailPanel(poolItem) {
           <h2>${item.symbol}</h2>
           <p>${poolItem.name}</p>
         </div>
-        <button class="detail-edit-button" type="button" data-detail-action="edit" data-detail-symbol="${escapeHtml(item.symbol)}">编辑</button>
       </div>
 
       <div class="detail-price-row">
@@ -1337,14 +1336,16 @@ function InstrumentDetailPanel(poolItem) {
         <div><dt>限价</dt><dd>${poolItem.usage === "strategy" ? price(item.limit_price) : "—"}</dd></div>
       </dl>
 
-      <div class="signal-note">
-        <span>信号说明</span>
-        <p>${escapeHtml(signalText)}</p>
-      </div>
+      <div class="detail-insight-grid">
+        <div class="signal-note">
+          <span>信号说明</span>
+          <p>${escapeHtml(signalText)}</p>
+        </div>
 
-      <div class="detail-footer">
-        <span>126D 动量</span>
-        <strong class="${changeClass(item.momentum_126_pct)}">${pct(item.momentum_126_pct, { sign: true })}</strong>
+        <div class="detail-footer">
+          <span>126D 动量</span>
+          <strong class="${changeClass(item.momentum_126_pct)}">${pct(item.momentum_126_pct, { sign: true })}</strong>
+        </div>
       </div>
 
       <div class="danger-zone detail-danger-zone">
