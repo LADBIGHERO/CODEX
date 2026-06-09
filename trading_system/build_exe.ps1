@@ -18,7 +18,7 @@ try {
   $Build = Join-Path $Root "build"
   $Preserve = Join-Path $Root ".build-preserve"
   $LocalBackup = Join-Path $Root ".local-data-backup"
-  $LocalDataFiles = @(".env.local", "asset_pool.json", "manual_holdings.json", "dashboard_view_cache.json", "binance api.txt")
+  $LocalDataFiles = @(".env.local", "asset_pool.json", "manual_holdings.json", "paper_account.json", "dashboard_view_cache.json", "binance api.txt")
   if (-not (Test-Path $Preserve)) { New-Item -ItemType Directory -Path $Preserve | Out-Null }
   if (-not (Test-Path $LocalBackup)) { New-Item -ItemType Directory -Path $LocalBackup | Out-Null }
   foreach ($Name in $LocalDataFiles) {
@@ -68,7 +68,7 @@ try {
     Copy-Item -LiteralPath "$Root\asset_pool.json" -Destination "$Dist\asset_pool.json" -Force
   }
   Copy-Item -LiteralPath "$Root\setup_tailscale.md" -Destination "$Dist\setup_tailscale.md" -Force
-  foreach ($Name in @(".env.local", "manual_holdings.json", "binance api.txt")) {
+  foreach ($Name in @(".env.local", "manual_holdings.json", "paper_account.json", "binance api.txt")) {
     $Saved = Join-Path $Preserve $Name
     $RootSide = Join-Path $Root $Name
     if (Test-Path $Saved) {

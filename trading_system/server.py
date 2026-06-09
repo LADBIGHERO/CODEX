@@ -44,6 +44,11 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 ASSET_POOL_VERSION = 1
 MANUAL_HOLDINGS_VERSION = 1
+PAPER_ACCOUNT_VERSION = 1
+DEFAULT_PAPER_CASH_USDT = 100_000.0
+MAX_PAPER_TRADES = 500
+MAX_PAPER_EQUITY_POINTS = 500
+MAX_PAPER_PROCESSED_SIGNALS = 1000
 MAX_ASSET_POOL_GROUPS = 10
 MAX_ASSET_POOL_GROUP_SYMBOLS = 30
 
@@ -96,6 +101,10 @@ def resolve_manual_holdings_config() -> Path:
     return external_root() / "manual_holdings.json"
 
 
+def resolve_paper_account_config() -> Path:
+    return external_root() / "paper_account.json"
+
+
 def resolve_dashboard_view_cache() -> Path:
     return external_root() / "dashboard_view_cache.json"
 
@@ -108,6 +117,31 @@ def empty_manual_holdings_config() -> dict[str, object]:
     return {"version": MANUAL_HOLDINGS_VERSION, "holdings": {}}
 
 
+def empty_paper_account_config(initial_cash: float = DEFAULT_PAPER_CASH_USDT) -> dict[str, object]:
+    cash = float(initial_cash) if initial_cash and initial_cash > 0 else DEFAULT_PAPER_CASH_USDT
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    return {
+        "version": PAPER_ACCOUNT_VERSION,
+        "settings": {
+            "initialCashUsdt": cash,
+            "riskPerTradePct": 1.0,
+            "autoRun": True,
+            "commissionPct": 0.0,
+            "slippagePct": 0.0,
+        },
+        "cashUsdt": cash,
+        "positions": {},
+        "trades": [],
+        "equityCurve": [],
+        "processedSignals": [],
+        "risk": {"lossStreak": 0, "entryPaused": False},
+        "lastRunAt": None,
+        "lastRunLog": [],
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
 def clean_optional_float(value: object) -> float | None:
     if value is None or value == "":
         return None
@@ -117,6 +151,16 @@ def clean_optional_float(value: object) -> float | None:
         return None
     if number < 0:
         return None
+    return number
+
+
+def clean_float(value: object, default: float = 0.0, minimum: float | None = None) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = default
+    if minimum is not None and number < minimum:
+        return minimum
     return number
 
 
@@ -150,6 +194,120 @@ def sanitize_manual_holdings_config(payload: object) -> dict[str, object]:
             holdings[symbol] = entry
 
     return {"version": MANUAL_HOLDINGS_VERSION, "holdings": holdings}
+
+
+def sanitize_paper_account_config(payload: object) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return empty_paper_account_config()
+
+    raw_settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
+    initial_cash = clean_float(raw_settings.get("initialCashUsdt"), DEFAULT_PAPER_CASH_USDT, 1.0)
+    settings = {
+        "initialCashUsdt": initial_cash,
+        "riskPerTradePct": min(5.0, max(0.1, clean_float(raw_settings.get("riskPerTradePct"), 1.0, 0.1))),
+        "autoRun": raw_settings.get("autoRun") is not False,
+        "commissionPct": min(1.0, clean_float(raw_settings.get("commissionPct"), 0.0, 0.0)),
+        "slippagePct": min(1.0, clean_float(raw_settings.get("slippagePct"), 0.0, 0.0)),
+    }
+
+    positions: dict[str, dict[str, object]] = {}
+    raw_positions = payload.get("positions")
+    if isinstance(raw_positions, dict):
+        for raw_symbol, raw_entry in raw_positions.items():
+            symbol = str(raw_symbol or "").strip().upper()
+            if not symbol or not isinstance(raw_entry, dict):
+                continue
+            quantity = clean_float(raw_entry.get("quantity"), 0.0, 0.0)
+            avg_cost = clean_float(raw_entry.get("avgCostUsdt", raw_entry.get("entryPrice")), 0.0, 0.0)
+            if quantity <= 0 or avg_cost <= 0:
+                continue
+            entry: dict[str, object] = {
+                "symbol": symbol,
+                "quantity": quantity,
+                "initialQuantity": clean_float(raw_entry.get("initialQuantity"), quantity, 0.0) or quantity,
+                "entryPrice": clean_float(raw_entry.get("entryPrice"), avg_cost, 0.0) or avg_cost,
+                "avgCostUsdt": avg_cost,
+                "stopPrice": clean_float(raw_entry.get("stopPrice"), 0.0, 0.0) or None,
+                "targetPrice": clean_float(raw_entry.get("targetPrice"), 0.0, 0.0) or None,
+                "target2Price": clean_float(raw_entry.get("target2Price"), 0.0, 0.0) or None,
+                "lastPrice": clean_float(raw_entry.get("lastPrice"), avg_cost, 0.0) or avg_cost,
+                "partialTaken": bool(raw_entry.get("partialTaken")),
+                "realizedPnlUsdt": clean_float(raw_entry.get("realizedPnlUsdt"), 0.0),
+            }
+            for key in ("openedAt", "openedDate", "openedSignalId", "source", "trigger"):
+                value = raw_entry.get(key)
+                if isinstance(value, str) and value.strip():
+                    entry[key] = value.strip()[:120]
+            positions[symbol] = entry
+
+    trades: list[dict[str, object]] = []
+    raw_trades = payload.get("trades")
+    if isinstance(raw_trades, list):
+        for raw_trade in raw_trades[-MAX_PAPER_TRADES:]:
+            if not isinstance(raw_trade, dict):
+                continue
+            symbol = str(raw_trade.get("symbol") or "").strip().upper()
+            side = str(raw_trade.get("side") or "").strip().upper()
+            quantity = clean_float(raw_trade.get("quantity"), 0.0, 0.0)
+            price = clean_float(raw_trade.get("price"), 0.0, 0.0)
+            if not symbol or side not in {"BUY", "SELL"} or quantity <= 0 or price <= 0:
+                continue
+            trades.append(
+                {
+                    "id": str(raw_trade.get("id") or f"{symbol}-{side}-{len(trades)}")[:160],
+                    "symbol": symbol,
+                    "side": side,
+                    "quantity": quantity,
+                    "price": price,
+                    "valueUsdt": clean_float(raw_trade.get("valueUsdt"), quantity * price, 0.0),
+                    "realizedPnlUsdt": clean_float(raw_trade.get("realizedPnlUsdt"), 0.0),
+                    "reason": str(raw_trade.get("reason") or "模拟交易")[:160],
+                    "signalId": str(raw_trade.get("signalId") or "")[:200],
+                    "executedAt": str(raw_trade.get("executedAt") or "")[:80],
+                    "closesPosition": bool(raw_trade.get("closesPosition")),
+                }
+            )
+
+    equity_curve: list[dict[str, object]] = []
+    raw_curve = payload.get("equityCurve")
+    if isinstance(raw_curve, list):
+        for raw_point in raw_curve[-MAX_PAPER_EQUITY_POINTS:]:
+            if not isinstance(raw_point, dict):
+                continue
+            equity_curve.append(
+                {
+                    "time": str(raw_point.get("time") or "")[:80],
+                    "dailyDate": str(raw_point.get("dailyDate") or "")[:32],
+                    "equityUsdt": clean_float(raw_point.get("equityUsdt"), 0.0, 0.0),
+                    "cashUsdt": clean_float(raw_point.get("cashUsdt"), 0.0, 0.0),
+                    "positionValueUsdt": clean_float(raw_point.get("positionValueUsdt"), 0.0, 0.0),
+                    "unrealizedPnlUsdt": clean_float(raw_point.get("unrealizedPnlUsdt"), 0.0),
+                    "realizedPnlUsdt": clean_float(raw_point.get("realizedPnlUsdt"), 0.0),
+                }
+            )
+
+    processed = []
+    raw_processed = payload.get("processedSignals")
+    if isinstance(raw_processed, list):
+        processed = [str(item)[:220] for item in raw_processed[-MAX_PAPER_PROCESSED_SIGNALS:] if item]
+
+    raw_risk = payload.get("risk") if isinstance(payload.get("risk"), dict) else {}
+    loss_streak = int(clean_float(raw_risk.get("lossStreak"), 0, 0))
+
+    return {
+        "version": PAPER_ACCOUNT_VERSION,
+        "settings": settings,
+        "cashUsdt": clean_float(payload.get("cashUsdt"), settings["initialCashUsdt"], 0.0),
+        "positions": positions,
+        "trades": trades,
+        "equityCurve": equity_curve,
+        "processedSignals": processed,
+        "risk": {"lossStreak": loss_streak, "entryPaused": loss_streak >= 3},
+        "lastRunAt": payload.get("lastRunAt") if isinstance(payload.get("lastRunAt"), str) else None,
+        "lastRunLog": payload.get("lastRunLog") if isinstance(payload.get("lastRunLog"), list) else [],
+        "createdAt": payload.get("createdAt") if isinstance(payload.get("createdAt"), str) else dt.datetime.now(dt.timezone.utc).isoformat(),
+        "updatedAt": payload.get("updatedAt") if isinstance(payload.get("updatedAt"), str) else dt.datetime.now(dt.timezone.utc).isoformat(),
+    }
 
 
 def normalize_group_id(value: object, fallback: str = "") -> str:
@@ -508,6 +666,322 @@ def local_instrument_search_result(raw_query: str, config: dict[str, object], as
     }
 
 
+def paper_price_for_item(item: dict[str, object] | None) -> float | None:
+    if not isinstance(item, dict):
+        return None
+    for key in ("current_price", "close"):
+        value = item.get(key)
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            return number
+    return None
+
+
+def paper_snapshot_items(snapshot: object) -> dict[str, dict[str, object]]:
+    if not isinstance(snapshot, dict):
+        return {}
+    items = snapshot.get("symbols")
+    if not isinstance(items, list):
+        return {}
+    by_symbol: dict[str, dict[str, object]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "").strip().upper()
+        if symbol:
+            by_symbol[symbol] = item
+    return by_symbol
+
+
+def paper_signal_id(snapshot: dict[str, object], symbol: str, action: str, item: dict[str, object]) -> str:
+    short_term = item.get("short_term") if isinstance(item.get("short_term"), dict) else {}
+    date = str(snapshot.get("latest_daily_date") or item.get("date") or snapshot.get("generated_at") or "")[:32]
+    trigger = str(short_term.get("trigger") or action).strip()[:40]
+    return f"{date}:{symbol}:{action}:{trigger}"
+
+
+def paper_realized_pnl(account: dict[str, object]) -> float:
+    trades = account.get("trades")
+    if not isinstance(trades, list):
+        return 0.0
+    return sum(clean_float(trade.get("realizedPnlUsdt"), 0.0) for trade in trades if isinstance(trade, dict))
+
+
+def paper_account_metrics(account: dict[str, object], snapshot: object | None = None) -> dict[str, object]:
+    by_symbol = paper_snapshot_items(snapshot)
+    positions = account.get("positions") if isinstance(account.get("positions"), dict) else {}
+    cash = clean_float(account.get("cashUsdt"), DEFAULT_PAPER_CASH_USDT, 0.0)
+    position_value = 0.0
+    unrealized = 0.0
+    for symbol, position in positions.items():
+        if not isinstance(position, dict):
+            continue
+        quantity = clean_float(position.get("quantity"), 0.0, 0.0)
+        avg_cost = clean_float(position.get("avgCostUsdt"), 0.0, 0.0)
+        current_price = paper_price_for_item(by_symbol.get(str(symbol).upper())) or clean_float(position.get("lastPrice"), avg_cost, 0.0)
+        position_value += quantity * current_price
+        unrealized += (current_price - avg_cost) * quantity
+    trades = [trade for trade in account.get("trades", []) if isinstance(trade, dict)]
+    closed_trades = [trade for trade in trades if trade.get("side") == "SELL" and trade.get("closesPosition")]
+    wins = [trade for trade in closed_trades if clean_float(trade.get("realizedPnlUsdt"), 0.0) > 0]
+    return {
+        "cashUsdt": cash,
+        "positionValueUsdt": position_value,
+        "equityUsdt": cash + position_value,
+        "unrealizedPnlUsdt": unrealized,
+        "realizedPnlUsdt": paper_realized_pnl(account),
+        "positionCount": len(positions),
+        "tradeCount": len(trades),
+        "closedTradeCount": len(closed_trades),
+        "winRatePct": len(wins) / len(closed_trades) * 100 if closed_trades else None,
+    }
+
+
+def append_paper_trade(
+    account: dict[str, object],
+    *,
+    symbol: str,
+    side: str,
+    quantity: float,
+    price: float,
+    reason: str,
+    signal_id: str,
+    executed_at: str,
+    realized_pnl: float = 0.0,
+    closes_position: bool = False,
+) -> dict[str, object]:
+    trades = account.setdefault("trades", [])
+    if not isinstance(trades, list):
+        trades = []
+        account["trades"] = trades
+    trade = {
+        "id": f"{executed_at}:{symbol}:{side}:{len(trades) + 1}",
+        "symbol": symbol,
+        "side": side,
+        "quantity": quantity,
+        "price": price,
+        "valueUsdt": quantity * price,
+        "realizedPnlUsdt": realized_pnl,
+        "reason": reason,
+        "signalId": signal_id,
+        "executedAt": executed_at,
+        "closesPosition": closes_position,
+    }
+    trades.append(trade)
+    del trades[:-MAX_PAPER_TRADES]
+    return trade
+
+
+def close_paper_position(
+    account: dict[str, object],
+    position: dict[str, object],
+    quantity: float,
+    price: float,
+    reason: str,
+    signal_id: str,
+    executed_at: str,
+) -> dict[str, object] | None:
+    symbol = str(position.get("symbol") or "").upper()
+    current_quantity = clean_float(position.get("quantity"), 0.0, 0.0)
+    avg_cost = clean_float(position.get("avgCostUsdt"), 0.0, 0.0)
+    sell_quantity = min(quantity, current_quantity)
+    if not symbol or sell_quantity <= 0 or price <= 0:
+        return None
+    realized = (price - avg_cost) * sell_quantity
+    remaining = current_quantity - sell_quantity
+    closes_position = remaining <= max(current_quantity * 0.000001, 0.00000001)
+    account["cashUsdt"] = clean_float(account.get("cashUsdt"), 0.0, 0.0) + sell_quantity * price
+    accrued = clean_float(position.get("realizedPnlUsdt"), 0.0) + realized
+    trade = append_paper_trade(
+        account,
+        symbol=symbol,
+        side="SELL",
+        quantity=sell_quantity,
+        price=price,
+        reason=reason,
+        signal_id=signal_id,
+        executed_at=executed_at,
+        realized_pnl=accrued if closes_position else realized,
+        closes_position=closes_position,
+    )
+    positions = account.get("positions") if isinstance(account.get("positions"), dict) else {}
+    if closes_position:
+        positions.pop(symbol, None)
+        risk = account.setdefault("risk", {})
+        if not isinstance(risk, dict):
+            risk = {}
+            account["risk"] = risk
+        loss_streak = int(clean_float(risk.get("lossStreak"), 0, 0))
+        risk["lossStreak"] = loss_streak + 1 if accrued < 0 else 0
+        risk["entryPaused"] = risk["lossStreak"] >= 3
+    else:
+        position["quantity"] = remaining
+        position["realizedPnlUsdt"] = accrued
+    return trade
+
+
+def append_paper_equity_point(account: dict[str, object], snapshot: dict[str, object], executed_at: str) -> None:
+    metrics = paper_account_metrics(account, snapshot)
+    curve = account.setdefault("equityCurve", [])
+    if not isinstance(curve, list):
+        curve = []
+        account["equityCurve"] = curve
+    curve.append(
+        {
+            "time": executed_at,
+            "dailyDate": str(snapshot.get("latest_daily_date") or "")[:32],
+            "equityUsdt": metrics["equityUsdt"],
+            "cashUsdt": metrics["cashUsdt"],
+            "positionValueUsdt": metrics["positionValueUsdt"],
+            "unrealizedPnlUsdt": metrics["unrealizedPnlUsdt"],
+            "realizedPnlUsdt": metrics["realizedPnlUsdt"],
+        }
+    )
+    del curve[:-MAX_PAPER_EQUITY_POINTS]
+
+
+def run_paper_account_once(account: dict[str, object], snapshot: dict[str, object]) -> dict[str, object]:
+    account = sanitize_paper_account_config(account)
+    if not isinstance(snapshot, dict):
+        raise ValueError("Snapshot must be an object")
+    by_symbol = paper_snapshot_items(snapshot)
+    executed_at = dt.datetime.now(dt.timezone.utc).isoformat()
+    run_log: list[dict[str, object]] = []
+    processed = account.setdefault("processedSignals", [])
+    if not isinstance(processed, list):
+        processed = []
+        account["processedSignals"] = processed
+    positions = account.setdefault("positions", {})
+    if not isinstance(positions, dict):
+        positions = {}
+        account["positions"] = positions
+
+    for symbol, position in list(positions.items()):
+        if not isinstance(position, dict):
+            continue
+        item = by_symbol.get(str(symbol).upper())
+        price = paper_price_for_item(item) or clean_float(position.get("lastPrice"), 0.0, 0.0)
+        if price <= 0:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": "缺少当前价格，无法评估退出"})
+            continue
+        position["lastPrice"] = price
+        short_term = item.get("short_term") if isinstance(item, dict) and isinstance(item.get("short_term"), dict) else {}
+        stop_price = clean_float(position.get("stopPrice"), 0.0, 0.0)
+        target_price = clean_float(position.get("targetPrice"), 0.0, 0.0)
+        target2_price = clean_float(position.get("target2Price"), 0.0, 0.0)
+        quantity = clean_float(position.get("quantity"), 0.0, 0.0)
+        signal_id = paper_signal_id(snapshot, str(symbol).upper(), "sell", item or {"symbol": symbol})
+        trade = None
+        if stop_price > 0 and price <= stop_price:
+            trade = close_paper_position(account, position, quantity, price, "触发短线止损", signal_id, executed_at)
+        elif target2_price > 0 and price >= target2_price:
+            trade = close_paper_position(account, position, quantity, price, "到达第二止盈", signal_id, executed_at)
+        elif target_price > 0 and price >= target_price and not position.get("partialTaken"):
+            trade = close_paper_position(account, position, quantity * 0.5, price, "到达第一止盈，卖出一半", signal_id, executed_at)
+            if str(symbol).upper() in positions:
+                position["partialTaken"] = True
+                position["stopPrice"] = max(stop_price, clean_float(position.get("avgCostUsdt"), 0.0, 0.0))
+        elif short_term.get("sell_signal"):
+            sell_reasons = short_term.get("sell_reasons")
+            if not isinstance(sell_reasons, list):
+                sell_reasons = []
+            reason = "、".join(str(item) for item in sell_reasons[:3]) or "短线卖出信号"
+            trade = close_paper_position(account, position, quantity, price, reason, signal_id, executed_at)
+        if trade:
+            run_log.append({"symbol": symbol, "action": "sell", "reason": trade["reason"], "quantity": trade["quantity"], "price": price})
+
+    metrics_before_entries = paper_account_metrics(account, snapshot)
+    risk = account.setdefault("risk", {})
+    if not isinstance(risk, dict):
+        risk = {}
+        account["risk"] = risk
+    loss_streak = int(clean_float(risk.get("lossStreak"), 0, 0))
+    entry_multiplier = 0.5 if loss_streak >= 2 else 1.0
+    entry_paused = loss_streak >= 3
+    risk["entryPaused"] = entry_paused
+
+    candidates = []
+    for symbol, item in by_symbol.items():
+        short_term = item.get("short_term") if isinstance(item.get("short_term"), dict) else {}
+        if short_term.get("buy_signal") and item.get("role") != "cash" and symbol not in positions:
+            candidates.append((clean_float(short_term.get("risk_reward"), 0.0), symbol, item, short_term))
+    candidates.sort(key=lambda row: (-row[0], row[1]))
+
+    for _, symbol, item, short_term in candidates:
+        signal_id = paper_signal_id(snapshot, symbol, "buy", item)
+        if signal_id in processed:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": "同一日同一买入信号已处理"})
+            continue
+        if entry_paused:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": "连续亏损 3 笔，暂停新开仓"})
+            continue
+        price = paper_price_for_item(item)
+        stop_price = clean_float(short_term.get("stop_price"), 0.0, 0.0)
+        target_price = clean_float(short_term.get("target_price"), 0.0, 0.0)
+        target2_price = clean_float(short_term.get("target2_price"), 0.0, 0.0)
+        if not price or stop_price <= 0 or stop_price >= price:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": "缺少有效入场价或止损位"})
+            continue
+        stop_distance_pct = (price - stop_price) / price * 100
+        if stop_distance_pct <= 0:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": "止损距离无效"})
+            continue
+        settings = account.get("settings") if isinstance(account.get("settings"), dict) else {}
+        risk_per_trade_pct = clean_float(settings.get("riskPerTradePct"), 1.0, 0.1)
+        risk_budget = clean_float(metrics_before_entries.get("equityUsdt"), DEFAULT_PAPER_CASH_USDT, 0.0) * risk_per_trade_pct / 100
+        position_value = risk_budget / (stop_distance_pct / 100) * entry_multiplier
+        cash = clean_float(account.get("cashUsdt"), 0.0, 0.0)
+        position_value = min(position_value, cash)
+        if position_value <= 0:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": "模拟现金不足"})
+            continue
+        quantity = position_value / price
+        account["cashUsdt"] = cash - position_value
+        positions[symbol] = {
+            "symbol": symbol,
+            "quantity": quantity,
+            "initialQuantity": quantity,
+            "entryPrice": price,
+            "avgCostUsdt": price,
+            "lastPrice": price,
+            "stopPrice": stop_price,
+            "targetPrice": target_price,
+            "target2Price": target2_price,
+            "partialTaken": False,
+            "realizedPnlUsdt": 0.0,
+            "openedAt": executed_at,
+            "openedDate": str(snapshot.get("latest_daily_date") or item.get("date") or "")[:32],
+            "openedSignalId": signal_id,
+            "source": "short_term",
+            "trigger": str(short_term.get("trigger") or ""),
+            "riskReward": clean_float(short_term.get("risk_reward"), 0.0, 0.0),
+            "stopDistancePct": stop_distance_pct,
+        }
+        append_paper_trade(
+            account,
+            symbol=symbol,
+            side="BUY",
+            quantity=quantity,
+            price=price,
+            reason="建议买入信号",
+            signal_id=signal_id,
+            executed_at=executed_at,
+        )
+        processed.append(signal_id)
+        run_log.append({"symbol": symbol, "action": "buy", "reason": "建议买入信号", "quantity": quantity, "price": price})
+
+    del processed[:-MAX_PAPER_PROCESSED_SIGNALS]
+    append_paper_equity_point(account, snapshot, executed_at)
+    account["lastRunAt"] = executed_at
+    account["lastRunLog"] = run_log[-80:]
+    account["updatedAt"] = executed_at
+    account["metrics"] = paper_account_metrics(account, snapshot)
+    return sanitize_paper_account_config(account) | {"metrics": account["metrics"]}
+
+
 def detect_tailscale() -> dict[str, str | bool | None]:
     tailscale = shutil.which("tailscale")
     if not tailscale:
@@ -694,6 +1168,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/manual-holdings":
             self.handle_manual_holdings_get()
             return
+        if parsed.path == "/api/paper-account":
+            self.handle_paper_account_get()
+            return
         if parsed.path == "/api/ui-cache":
             self.handle_ui_cache_get()
             return
@@ -718,6 +1195,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/manual-holdings":
             self.handle_manual_holdings_post()
+            return
+        if parsed.path == "/api/paper-account/reset":
+            self.handle_paper_account_reset()
+            return
+        if parsed.path == "/api/paper-account/run":
+            self.handle_paper_account_run()
             return
         if parsed.path == "/api/ui-cache":
             self.handle_ui_cache_post()
@@ -842,6 +1325,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "server": self.app.status_payload(),
                 }
             )
+        except json.JSONDecodeError as exc:
+            self.send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc), "server": self.app.status_payload()}, HTTPStatus.BAD_GATEWAY)
+
+    def handle_paper_account_get(self) -> None:
+        try:
+            account = self.app.load_paper_account_config()
+            account["metrics"] = paper_account_metrics(account)
+            self.send_json(
+                {
+                    "ok": True,
+                    "account": account,
+                    "capabilities": {
+                        "read": True,
+                        "reset": True,
+                        "run": True,
+                    },
+                    "server": self.app.status_payload(),
+                }
+            )
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc), "server": self.app.status_payload()}, HTTPStatus.BAD_GATEWAY)
+
+    def handle_paper_account_reset(self) -> None:
+        try:
+            payload = self.read_json_body()
+            raw_initial = payload.get("initialCashUsdt", payload.get("initial_cash_usdt", DEFAULT_PAPER_CASH_USDT))
+            account = self.app.reset_paper_account_config(clean_float(raw_initial, DEFAULT_PAPER_CASH_USDT, 1.0))
+            account["metrics"] = paper_account_metrics(account)
+            self.send_json({"ok": True, "account": account, "server": self.app.status_payload()})
+        except json.JSONDecodeError as exc:
+            self.send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc), "server": self.app.status_payload()}, HTTPStatus.BAD_GATEWAY)
+
+    def handle_paper_account_run(self) -> None:
+        try:
+            payload = self.read_json_body()
+            snapshot = payload.get("snapshot", payload)
+            if not isinstance(snapshot, dict):
+                raise ValueError("Missing snapshot")
+            account = self.app.run_paper_account(snapshot)
+            self.send_json({"ok": True, "account": account, "server": self.app.status_payload()})
         except json.JSONDecodeError as exc:
             self.send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -997,13 +1524,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
 
 class DashboardServer(ThreadingHTTPServer):
-    def __init__(self, server_address: tuple[str, int], handler_class: type[DashboardHandler], config_path: Path, report_dir: Path, dashboard_root: Path, asset_pool_path: Path, manual_holdings_path: Path, ui_cache_path: Path):
+    def __init__(self, server_address: tuple[str, int], handler_class: type[DashboardHandler], config_path: Path, report_dir: Path, dashboard_root: Path, asset_pool_path: Path, manual_holdings_path: Path, paper_account_path: Path, ui_cache_path: Path):
         super().__init__(server_address, handler_class)
         self.config_path = config_path
         self.report_dir = report_dir
         self.dashboard_root = dashboard_root
         self.asset_pool_path = asset_pool_path
         self.manual_holdings_path = manual_holdings_path
+        self.paper_account_path = paper_account_path
         self.ui_cache_path = ui_cache_path
         self.tailscale_status = detect_tailscale()
 
@@ -1039,6 +1567,32 @@ class DashboardServer(ThreadingHTTPServer):
         os.replace(temp_path, self.manual_holdings_path)
         return sanitized
 
+    def load_paper_account_config(self) -> dict[str, object]:
+        if not self.paper_account_path.exists():
+            return empty_paper_account_config()
+        with self.paper_account_path.open("r", encoding="utf-8") as f:
+            return sanitize_paper_account_config(json.load(f))
+
+    def save_paper_account_config(self, config: dict[str, object]) -> dict[str, object]:
+        sanitized = sanitize_paper_account_config(config)
+        self.paper_account_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.paper_account_path.with_suffix(self.paper_account_path.suffix + ".tmp")
+        with temp_path.open("w", encoding="utf-8") as f:
+            json.dump(sanitized, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(temp_path, self.paper_account_path)
+        return sanitized
+
+    def reset_paper_account_config(self, initial_cash: float = DEFAULT_PAPER_CASH_USDT) -> dict[str, object]:
+        return self.save_paper_account_config(empty_paper_account_config(initial_cash))
+
+    def run_paper_account(self, snapshot: dict[str, object]) -> dict[str, object]:
+        account = self.load_paper_account_config()
+        updated = run_paper_account_once(account, snapshot)
+        saved = self.save_paper_account_config(updated)
+        saved["metrics"] = paper_account_metrics(saved, snapshot)
+        return saved
+
     def load_dashboard_view_cache(self) -> dict[str, object] | None:
         if not self.ui_cache_path.exists():
             return None
@@ -1063,6 +1617,7 @@ class DashboardServer(ThreadingHTTPServer):
             "config_path": str(self.config_path.resolve()),
             "asset_pool_path": str(self.asset_pool_path.resolve()),
             "manual_holdings_path": str(self.manual_holdings_path.resolve()),
+            "paper_account_path": str(self.paper_account_path.resolve()),
             "ui_cache_path": str(self.ui_cache_path.resolve()),
             "report_dir": str(self.report_dir.resolve()),
         }
@@ -1087,10 +1642,11 @@ def main() -> int:
     dashboard_root = resolve_dashboard_root()
     asset_pool_path = resolve_asset_pool_config()
     manual_holdings_path = resolve_manual_holdings_config()
+    paper_account_path = resolve_paper_account_config()
     ui_cache_path = resolve_dashboard_view_cache()
     report_dir.mkdir(parents=True, exist_ok=True)
 
-    server = DashboardServer((args.host, args.port), DashboardHandler, config_path, report_dir, dashboard_root, asset_pool_path, manual_holdings_path, ui_cache_path)
+    server = DashboardServer((args.host, args.port), DashboardHandler, config_path, report_dir, dashboard_root, asset_pool_path, manual_holdings_path, paper_account_path, ui_cache_path)
     local_url = f"http://127.0.0.1:{server.server_address[1]}"
     if args.tailscale_serve:
         server.tailscale_status["serve"] = start_tailscale_serve(server.server_address[1])

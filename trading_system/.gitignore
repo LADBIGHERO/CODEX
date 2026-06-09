@@ -12,6 +12,7 @@ outputs/
 .env.*
 !.env.example
 manual_holdings.json
+paper_account.json
 binance api.txt
 dashboard_view_cache.json
 .build-preserve/
