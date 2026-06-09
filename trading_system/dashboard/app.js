@@ -187,6 +187,7 @@ const routeTitles = {
   portfolio: "组合分析",
   monitor: "监控中心",
   backtest: "回测分析",
+  paper: "模拟账户",
   settings: "系统设置",
 };
 
@@ -238,6 +239,27 @@ let manualHoldingsCapabilities = {
   read: false,
   persistConfig: false,
 };
+let paperAccount = {
+  version: 1,
+  settings: {
+    initialCashUsdt: 100000,
+    riskPerTradePct: 1,
+    autoRun: true,
+  },
+  cashUsdt: 100000,
+  positions: {},
+  trades: [],
+  equityCurve: [],
+  processedSignals: [],
+  risk: { lossStreak: 0, entryPaused: false },
+};
+let paperAccountCapabilities = {
+  read: false,
+  reset: false,
+  run: false,
+};
+let paperAccountLoading = false;
+let paperAccountError = "";
 let lastSnapshot = null;
 let currentConfig = null;
 let currentConfigError = "";
@@ -318,6 +340,26 @@ function actionClass(action) {
 function getRoute() {
   const route = window.location.hash.replace("#", "") || "overview";
   return Object.hasOwn(routeTitles, route) ? route : "overview";
+}
+
+function ensurePaperNavItem() {
+  if (document.querySelector('[data-route="paper"]')) return;
+  const settingsLink = document.querySelector('[data-route="settings"]');
+  if (!settingsLink) return;
+  settingsLink.insertAdjacentHTML("beforebegin", `
+    <a class="nav-item" href="#paper" data-route="paper">
+      <span class="nav-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false">
+          <path d="M5 18.5V7.5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v11" />
+          <path d="M8 9h8" />
+          <path d="M8 13h4" />
+          <path d="M7 18.5h10" />
+          <path d="M15.5 13.5 18 16l-2.5 2.5" />
+        </svg>
+      </span>
+      <span>模拟</span>
+    </a>
+  `);
 }
 
 function getSystemState(item) {
@@ -3235,6 +3277,214 @@ function CurrentHoldingRow(row) {
   `;
 }
 
+function renderPaperSummary(items) {
+  const stats = paperAccountStats(items);
+  const initialCash = Number(paperAccount.settings?.initialCashUsdt || 100000);
+  const totalReturn = initialCash > 0 ? (stats.equityUsdt / initialCash - 1) * 100 : null;
+  const cards = [
+    { label: "模拟净值", value: formatUsdt(stats.equityUsdt), helper: `收益 ${pct(totalReturn, { sign: true })}`, tone: stats.equityUsdt >= initialCash ? "green" : "red", icon: "portfolio" },
+    { label: "现金", value: formatUsdt(stats.cashUsdt), helper: "可用于新开仓", tone: "blue", icon: "wallet" },
+    { label: "持仓数", value: stats.positionCount, helper: `${stats.tradeCount} 条模拟交易`, tone: "slate", icon: "assetCount" },
+    { label: "已实现盈亏", value: formatSignedUsdt(stats.realizedPnlUsdt), helper: `${stats.closedTradeCount} 笔已闭合`, tone: stats.realizedPnlUsdt >= 0 ? "green" : "red", icon: "return" },
+    { label: "胜率", value: stats.winRatePct === null ? "—" : pct(stats.winRatePct), helper: paperAccount.risk?.entryPaused ? "暂停新开仓" : `连亏 ${paperAccount.risk?.lossStreak || 0} 笔`, tone: paperAccount.risk?.entryPaused ? "red" : "amber", icon: "target" },
+  ];
+  document.getElementById("summaryCards").innerHTML = cards.map((card) => SummaryCard(card)).join("");
+}
+
+function renderPaperPage(items, snapshot) {
+  renderPaperSummary(items);
+  const stats = paperAccountStats(items);
+  const positions = paperPositionRows(items);
+  const trades = [...(paperAccount.trades || [])].reverse().slice(0, 80);
+  document.getElementById("routeContent").innerHTML = `
+    <section class="paper-account-toolbar">
+      <div>
+        <h2>模拟账户</h2>
+        <p>仅用当前短线信号进行纸交易，不调用 Binance 交易接口，也不读取真实持仓作为模拟持仓。</p>
+      </div>
+      <div class="paper-account-actions">
+        <button class="asset-secondary-button" type="button" data-paper-run ${paperAccountLoading || !paperAccountCapabilities.run ? "disabled" : ""}>
+          ${paperAccountLoading ? "模拟中..." : "立即模拟一次"}
+        </button>
+        <button class="danger-button" type="button" data-paper-reset ${paperAccountLoading || !paperAccountCapabilities.reset ? "disabled" : ""}>重置模拟账户</button>
+      </div>
+    </section>
+    <section class="paper-account-status ${paperAccount.risk?.entryPaused ? "danger" : "neutral"}">
+      <div>
+        <strong>${paperAccount.risk?.entryPaused ? "已暂停新开仓" : "自动纸交易已启用"}</strong>
+        <span>刷新快照后自动执行一次；同一日同一品种同一信号不会重复开仓。</span>
+      </div>
+      <span>最近模拟：${paperAccount.lastRunAt ? formatDateTime(paperAccount.lastRunAt) : "尚未运行"}</span>
+    </section>
+    ${paperAccountError ? `<section class="notice bad paper-notice">${escapeHtml(paperAccountError)}</section>` : ""}
+    <section class="paper-layout">
+      <div class="paper-main-column">
+        ${PaperPositionsTable(positions)}
+        ${PaperTradesTable(trades)}
+      </div>
+      <aside class="paper-side-panel">
+        ${PaperMetricsPanel(stats)}
+        ${PaperRunLog(paperAccount.lastRunLog || [])}
+      </aside>
+    </section>
+  `;
+  bindPaperEvents();
+}
+
+function PaperMetricsPanel(stats) {
+  const initialCash = Number(paperAccount.settings?.initialCashUsdt || 100000);
+  const openRisk = paperPositionRows().reduce((sum, position) => {
+    const stop = Number(position.stopPrice || 0);
+    const current = Number(position.currentPrice || 0);
+    const quantity = Number(position.quantity || 0);
+    return stop > 0 && current > stop ? sum + (current - stop) * quantity : sum;
+  }, 0);
+  return `
+    <section class="paper-panel-card">
+      <div class="paper-panel-header">
+        <h3>账户状态</h3>
+        <span class="data-source-pill">模拟</span>
+      </div>
+      <dl class="paper-metric-list">
+        <div><dt>初始资金</dt><dd>${formatUsdt(initialCash)}</dd></div>
+        <div><dt>当前净值</dt><dd>${formatUsdt(stats.equityUsdt)}</dd></div>
+        <div><dt>持仓市值</dt><dd>${formatUsdt(stats.positionValueUsdt)}</dd></div>
+        <div><dt>浮动盈亏</dt><dd class="${changeClass(stats.unrealizedPnlUsdt)}">${formatSignedUsdt(stats.unrealizedPnlUsdt)}</dd></div>
+        <div><dt>估算开口风险</dt><dd>${formatUsdt(openRisk)}</dd></div>
+        <div><dt>单笔风险</dt><dd>${pct(Number(paperAccount.settings?.riskPerTradePct || 1))}</dd></div>
+        <div><dt>连续亏损</dt><dd>${paperAccount.risk?.lossStreak || 0} 笔</dd></div>
+        <div><dt>执行模式</dt><dd>${paperAccount.settings?.autoRun === false ? "手动" : "自动"}</dd></div>
+      </dl>
+    </section>
+  `;
+}
+
+function PaperPositionsTable(rows) {
+  return `
+    <section class="paper-card">
+      <div class="paper-card-header">
+        <div>
+          <h2>模拟持仓</h2>
+          <p>由建议买入信号开仓，止损/止盈和建议卖出信号负责退出。</p>
+        </div>
+        ${SettingsMiniBadge(rows.length ? `${rows.length} 个持仓` : "空仓", rows.length ? "good" : "neutral")}
+      </div>
+      <div class="paper-table-wrap">
+        <table class="asset-table paper-table">
+          <thead>
+            <tr>
+              <th>品种</th>
+              <th>数量</th>
+              <th>成本</th>
+              <th>现价</th>
+              <th>市值</th>
+              <th>浮动盈亏</th>
+              <th>止损</th>
+              <th>止盈一</th>
+              <th>止盈二</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length ? rows.map(PaperPositionRow).join("") : `<tr><td colspan="10"><div class="empty-state compact">暂无模拟持仓；出现建议买入信号后会自动建立纸交易仓位。</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function PaperPositionRow(row) {
+  const status = row.partialTaken ? "已止盈一" : "跟踪中";
+  return `
+    <tr>
+      <td class="symbol-cell">${escapeHtml(row.symbol)}</td>
+      <td>${formatAssetQuantity(row.quantity)}</td>
+      <td>${formatUsdt(row.avgCostUsdt)}</td>
+      <td>${formatUsdt(row.currentPrice)}</td>
+      <td>${formatUsdt(row.valueUsdt)}</td>
+      <td class="${changeClass(row.pnlUsdt)}">
+        ${formatSignedUsdt(row.pnlUsdt)}
+        <small>${row.pnlPct === null ? "—" : pct(row.pnlPct, { sign: true })}</small>
+      </td>
+      <td>${price(row.stopPrice)}</td>
+      <td>${price(row.targetPrice)}</td>
+      <td>${price(row.target2Price)}</td>
+      <td>${SettingsMiniBadge(status, row.partialTaken ? "good" : "neutral")}</td>
+    </tr>
+  `;
+}
+
+function PaperTradesTable(trades) {
+  return `
+    <section class="paper-card">
+      <div class="paper-card-header">
+        <div>
+          <h2>模拟交易记录</h2>
+          <p>最多展示最近 80 条；完整记录保存在本地模拟账户文件中。</p>
+        </div>
+        ${SettingsMiniBadge(trades.length ? `${trades.length} 条` : "暂无记录", "neutral")}
+      </div>
+      <div class="paper-table-wrap">
+        <table class="asset-table paper-table trade">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>品种</th>
+              <th>方向</th>
+              <th>数量</th>
+              <th>价格</th>
+              <th>金额</th>
+              <th>实现盈亏</th>
+              <th>原因</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${trades.length ? trades.map(PaperTradeRow).join("") : `<tr><td colspan="8"><div class="empty-state compact">暂无模拟交易记录。</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+}
+
+function PaperTradeRow(trade) {
+  const pnl = Number(trade.realizedPnlUsdt || 0);
+  return `
+    <tr>
+      <td>${escapeHtml(formatDateTime(trade.executedAt))}</td>
+      <td class="symbol-cell">${escapeHtml(trade.symbol)}</td>
+      <td>${SettingsMiniBadge(trade.side === "BUY" ? "买入" : "卖出", trade.side === "BUY" ? "good" : "bad")}</td>
+      <td>${formatAssetQuantity(trade.quantity)}</td>
+      <td>${formatUsdt(trade.price)}</td>
+      <td>${formatUsdt(trade.valueUsdt)}</td>
+      <td class="${changeClass(pnl)}">${trade.side === "SELL" ? formatSignedUsdt(pnl) : "—"}</td>
+      <td>${escapeHtml(trade.reason || "模拟交易")}</td>
+    </tr>
+  `;
+}
+
+function PaperRunLog(logItems) {
+  return `
+    <section class="paper-panel-card">
+      <div class="paper-panel-header">
+        <h3>最近执行日志</h3>
+        <span>${logItems.length ? `${logItems.length} 条` : "空"}</span>
+      </div>
+      ${logItems.length ? `
+        <ul class="paper-run-log">
+          ${logItems.slice(-12).reverse().map((item) => `
+            <li class="${escapeHtml(item.action || "skip")}">
+              <strong>${escapeHtml(item.symbol || "系统")}</strong>
+              <span>${escapeHtml(item.reason || item.action || "已处理")}</span>
+            </li>
+          `).join("")}
+        </ul>
+      ` : `<div class="empty-state compact">刷新后如果有可执行信号，这里会显示买入、卖出或跳过原因。</div>`}
+    </section>
+  `;
+}
+
 function BacktestConfigBar(model) {
   const configItems = [
     { label: "区间", value: model.startDate && model.endDate ? `${model.startDate} - ${model.endDate}` : "未运行" },
@@ -3948,6 +4198,147 @@ function formatDateTime(value) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function normalizePaperAccount(account) {
+  if (!account || typeof account !== "object") return paperAccount;
+  return {
+    version: account.version || 1,
+    settings: {
+      initialCashUsdt: Number(account.settings?.initialCashUsdt || 100000),
+      riskPerTradePct: Number(account.settings?.riskPerTradePct || 1),
+      autoRun: account.settings?.autoRun !== false,
+    },
+    cashUsdt: Number(account.cashUsdt || 0),
+    positions: account.positions && typeof account.positions === "object" ? account.positions : {},
+    trades: Array.isArray(account.trades) ? account.trades : [],
+    equityCurve: Array.isArray(account.equityCurve) ? account.equityCurve : [],
+    processedSignals: Array.isArray(account.processedSignals) ? account.processedSignals : [],
+    risk: account.risk && typeof account.risk === "object" ? account.risk : { lossStreak: 0, entryPaused: false },
+    metrics: account.metrics && typeof account.metrics === "object" ? account.metrics : null,
+    lastRunAt: account.lastRunAt || null,
+    lastRunLog: Array.isArray(account.lastRunLog) ? account.lastRunLog : [],
+    createdAt: account.createdAt || null,
+    updatedAt: account.updatedAt || null,
+  };
+}
+
+function snapshotItemMap(items = lastSnapshot?.symbols || []) {
+  return new Map((items || []).map((item) => [item.symbol, item]));
+}
+
+function paperCurrentPrice(symbol, items = lastSnapshot?.symbols || []) {
+  const item = snapshotItemMap(items).get(symbol);
+  const value = item?.current_price ?? item?.close;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function paperAccountStats(items = lastSnapshot?.symbols || []) {
+  const positions = Object.values(paperAccount.positions || {});
+  const cash = Number(paperAccount.cashUsdt || 0);
+  let positionValue = 0;
+  let unrealized = 0;
+  positions.forEach((position) => {
+    const priceValue = paperCurrentPrice(position.symbol, items) ?? Number(position.lastPrice || position.avgCostUsdt || 0);
+    const quantity = Number(position.quantity || 0);
+    const avgCost = Number(position.avgCostUsdt || position.entryPrice || 0);
+    positionValue += quantity * priceValue;
+    unrealized += (priceValue - avgCost) * quantity;
+  });
+  const closedTrades = (paperAccount.trades || []).filter((trade) => trade.side === "SELL" && trade.closesPosition);
+  const wins = closedTrades.filter((trade) => Number(trade.realizedPnlUsdt || 0) > 0);
+  const realized = (paperAccount.trades || []).reduce((sum, trade) => sum + Number(trade.realizedPnlUsdt || 0), 0);
+  return {
+    cashUsdt: cash,
+    positionValueUsdt: positionValue,
+    equityUsdt: cash + positionValue,
+    unrealizedPnlUsdt: unrealized,
+    realizedPnlUsdt: realized,
+    positionCount: positions.length,
+    tradeCount: (paperAccount.trades || []).length,
+    closedTradeCount: closedTrades.length,
+    winRatePct: closedTrades.length ? wins.length / closedTrades.length * 100 : null,
+  };
+}
+
+function paperPositionRows(items = lastSnapshot?.symbols || []) {
+  return Object.values(paperAccount.positions || {})
+    .map((position) => {
+      const currentPrice = paperCurrentPrice(position.symbol, items) ?? Number(position.lastPrice || position.avgCostUsdt || 0);
+      const quantity = Number(position.quantity || 0);
+      const avgCost = Number(position.avgCostUsdt || position.entryPrice || 0);
+      const valueUsdt = quantity * currentPrice;
+      const pnlUsdt = (currentPrice - avgCost) * quantity;
+      const costUsdt = avgCost * quantity;
+      return {
+        ...position,
+        currentPrice,
+        valueUsdt,
+        pnlUsdt,
+        pnlPct: costUsdt > 0 ? pnlUsdt / costUsdt * 100 : null,
+      };
+    })
+    .sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)));
+}
+
+async function loadPaperAccountQuietly() {
+  try {
+    const response = await fetch("/api/paper-account", { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "模拟账户读取失败");
+    paperAccount = normalizePaperAccount(payload.account);
+    paperAccountCapabilities = { ...paperAccountCapabilities, ...(payload.capabilities || {}) };
+    paperAccountError = "";
+  } catch (error) {
+    paperAccountError = error.message || "模拟账户读取失败";
+    paperAccountCapabilities = { read: false, reset: false, run: false };
+  }
+}
+
+async function runPaperAccountForSnapshot(snapshot, options = {}) {
+  if (!snapshot?.symbols?.length) return false;
+  paperAccountLoading = true;
+  try {
+    const response = await fetch("/api/paper-account/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ snapshot }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "模拟执行失败");
+    paperAccount = normalizePaperAccount(payload.account);
+    paperAccountCapabilities = { ...paperAccountCapabilities, run: true, reset: true, read: true };
+    paperAccountError = "";
+    return true;
+  } catch (error) {
+    paperAccountError = error.message || "模拟执行失败";
+    if (!options.silent) setNotice(paperAccountError);
+    return false;
+  } finally {
+    paperAccountLoading = false;
+  }
+}
+
+async function resetPaperAccount() {
+  paperAccountLoading = true;
+  try {
+    const response = await fetch("/api/paper-account/reset", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ initialCashUsdt: 100000 }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "模拟账户重置失败");
+    paperAccount = normalizePaperAccount(payload.account);
+    paperAccountError = "";
+    if (lastSnapshot) render(lastSnapshot);
+    setNotice("模拟账户已重置为 100,000 USDT。", "neutral");
+  } catch (error) {
+    paperAccountError = error.message || "模拟账户重置失败";
+    setNotice(paperAccountError);
+  } finally {
+    paperAccountLoading = false;
+  }
 }
 
 function PortfolioStructureCard(model) {
@@ -4863,6 +5254,9 @@ function updateRouteChrome(route) {
     if (route === "settings") {
       dataScopeLabel.textContent = "当前版本";
       dataScope.textContent = "未启用版本管理";
+    } else if (route === "paper") {
+      dataScopeLabel.textContent = "账户模式";
+      dataScope.textContent = "模拟";
     } else {
       dataScopeLabel.textContent = "数据截至";
       dataScope.textContent = route === "backtest" ? "回测未运行" : "收盘后";
@@ -4904,6 +5298,8 @@ function render(snapshot, options = {}) {
     renderMonitorPage(items, snapshot);
   } else if (route === "backtest") {
     renderBacktestPage(items, snapshot);
+  } else if (route === "paper") {
+    renderPaperPage(items, snapshot);
   } else if (route === "settings") {
     renderSettingsPage(items, snapshot);
   } else {
@@ -4915,6 +5311,7 @@ function render(snapshot, options = {}) {
   const intradayErrors = snapshot.errors?.intraday || {};
   for (const [symbol, text] of Object.entries(dailyErrors)) errors.push(`${symbol} 日线数据失败：${text}`);
   for (const [symbol, text] of Object.entries(intradayErrors)) errors.push(`${symbol} 盘中数据失败：${text}`);
+  if (paperAccountError) errors.push(`模拟账户：${paperAccountError}`);
   setNotice(errors.join("；"));
   if (options.cache !== "skip") {
     saveDashboardCache(snapshot);
@@ -5391,6 +5788,19 @@ function bindPortfolioEvents() {
   });
 }
 
+function bindPaperEvents() {
+  document.querySelector("[data-paper-run]")?.addEventListener("click", async () => {
+    if (!lastSnapshot) return;
+    await runPaperAccountForSnapshot(lastSnapshot);
+    render(lastSnapshot);
+  });
+
+  document.querySelector("[data-paper-reset]")?.addEventListener("click", async () => {
+    if (!window.confirm("确认重置模拟账户？这会清空模拟持仓、净值曲线和交易记录。")) return;
+    await resetPaperAccount();
+  });
+}
+
 function bindSettingsEvents() {
   document.querySelectorAll("[data-settings-category]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -5456,12 +5866,13 @@ async function refresh(options = {}) {
     button.textContent = background ? "后台刷新中" : "读取中";
   }
   try {
-    const [snapshotResult, configResult, assetPoolResult, manualHoldingsResult, binanceStatusResult] = await Promise.allSettled([
+    const [snapshotResult, configResult, assetPoolResult, manualHoldingsResult, binanceStatusResult, paperAccountResult] = await Promise.allSettled([
       fetch("/api/refresh", { cache: "no-store" }).then((response) => response.json()),
       fetch("/api/config", { cache: "no-store" }).then((response) => response.json()),
       fetch("/api/asset-pool", { cache: "no-store" }).then((response) => response.json()),
       fetch("/api/manual-holdings", { cache: "no-store" }).then((response) => response.json()),
       fetch("/api/integrations/binance/status", { cache: "no-store" }).then((response) => response.json()),
+      fetch("/api/paper-account", { cache: "no-store" }).then((response) => response.json()),
     ]);
 
     if (configResult.status === "fulfilled" && configResult.value.ok) {
@@ -5532,6 +5943,20 @@ async function refresh(options = {}) {
       binanceAccount = null;
     }
 
+    if (paperAccountResult.status === "fulfilled" && paperAccountResult.value.ok) {
+      paperAccount = normalizePaperAccount(paperAccountResult.value.account);
+      paperAccountCapabilities = {
+        ...paperAccountCapabilities,
+        ...(paperAccountResult.value.capabilities || {}),
+      };
+      paperAccountError = "";
+    } else {
+      paperAccountError = paperAccountResult.status === "fulfilled"
+        ? (paperAccountResult.value.error || "模拟账户读取失败")
+        : paperAccountResult.reason.message;
+      paperAccountCapabilities = { read: false, reset: false, run: false };
+    }
+
     await loadBinanceAccountQuietly();
 
     if (snapshotResult.status !== "fulfilled") {
@@ -5540,6 +5965,9 @@ async function refresh(options = {}) {
     const payload = snapshotResult.value;
     if (!payload.ok) {
       throw new Error(payload.error || "读取失败");
+    }
+    if (paperAccount.settings?.autoRun !== false && paperAccountCapabilities.run) {
+      await runPaperAccountForSnapshot(payload.snapshot, { silent: true });
     }
     render(payload.snapshot);
   } catch (error) {
@@ -5565,4 +5993,5 @@ window.addEventListener("hashchange", () => {
   if (lastSnapshot) render(lastSnapshot);
 });
 window.addEventListener("beforeunload", () => flushDashboardCache(lastSnapshot));
+ensurePaperNavItem();
 bootDashboard();
