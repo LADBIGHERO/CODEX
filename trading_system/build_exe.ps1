@@ -58,6 +58,7 @@ try {
     throw "PyInstaller failed with exit code $PyInstallerExitCode"
   }
 
+  Copy-Item -LiteralPath "$Root\dashboard" -Destination "$Dist\dashboard" -Recurse -Force
   Copy-Item -LiteralPath "$Root\config.json" -Destination "$Dist\config.json" -Force
   $SavedAssetPool = Join-Path $Preserve "asset_pool.json"
   if (Test-Path $SavedAssetPool) {
