@@ -2907,6 +2907,100 @@ function buildBacktestModel(snapshot) {
   };
 }
 
+function buildCurrentHoldingPerformanceModel(items) {
+  const rawBySymbol = new Map((items || []).map((item) => [String(item.symbol || "").toUpperCase(), item]));
+  const poolBySymbol = new Map();
+  buildAssetPoolItems(items || []).forEach((item) => {
+    if (!poolBySymbol.has(item.symbol)) poolBySymbol.set(item.symbol, item);
+  });
+  const symbols = new Set([
+    ...poolBySymbol.keys(),
+    ...Object.keys(manualHoldingsConfig.holdings || {}).map((symbol) => String(symbol).toUpperCase()),
+    ...(binanceAccount?.assets || []).map((asset) => String(asset.asset || "").toUpperCase()),
+  ]);
+
+  const rows = [...symbols].sort().map((symbol) => {
+    const raw = rawBySymbol.get(symbol);
+    const asset = AccountAssetForSymbol(symbol);
+    const rawPrice = raw?.current_price ?? raw?.close;
+    const currentPrice = typeof rawPrice === "number"
+      ? rawPrice
+      : typeof asset?.priceUsdt === "number"
+        ? asset.priceUsdt
+        : null;
+    const position = AccountPositionForSymbol(symbol, currentPrice);
+    if (!position || !Number.isFinite(position.quantity) || position.quantity <= 0) return null;
+
+    const poolItem = poolBySymbol.get(symbol) || defaultPoolItemFromSnapshot(symbol);
+    const valueUsdt = Number.isFinite(position.valueUsdt)
+      ? Number(position.valueUsdt)
+      : currentPrice === null
+        ? null
+        : position.quantity * currentPrice;
+    const avgCostUsdt = Number.isFinite(position.avgCostUsdt) && position.avgCostUsdt > 0
+      ? Number(position.avgCostUsdt)
+      : null;
+    const costUsdt = avgCostUsdt === null ? null : avgCostUsdt * position.quantity;
+    const pnlUsdt = costUsdt === null || currentPrice === null
+      ? null
+      : (currentPrice - avgCostUsdt) * position.quantity;
+    const pnlPct = pnlUsdt === null || costUsdt <= 0 ? null : pnlUsdt / costUsdt * 100;
+    const sourceLabel = position.source === "manual" ? "手动" : "Binance";
+    const note = position.note
+      || (!poolBySymbol.has(symbol) ? "账户持仓未加入资产池" : avgCostUsdt === null ? "需要平均成本" : "已覆盖成本");
+
+    return {
+      symbol,
+      name: poolItem?.name || raw?.name || symbol,
+      source: position.source,
+      sourceLabel,
+      quantity: position.quantity,
+      avgCostUsdt,
+      currentPrice,
+      valueUsdt,
+      costUsdt,
+      pnlUsdt,
+      pnlPct,
+      poolItem,
+      inAssetPool: poolBySymbol.has(symbol),
+      note,
+    };
+  }).filter(Boolean);
+
+  const valuedRows = rows.filter((row) => Number.isFinite(row.valueUsdt));
+  const costRows = rows.filter((row) => Number.isFinite(row.costUsdt));
+  const pnlRows = rows.filter((row) => Number.isFinite(row.pnlUsdt));
+  const totalValueUsdt = valuedRows.length ? valuedRows.reduce((sum, row) => sum + row.valueUsdt, 0) : null;
+  const totalCostUsdt = costRows.length ? costRows.reduce((sum, row) => sum + row.costUsdt, 0) : null;
+  const totalPnlUsdt = pnlRows.length ? pnlRows.reduce((sum, row) => sum + row.pnlUsdt, 0) : null;
+  const totalPnlPct = totalPnlUsdt === null || !totalCostUsdt ? null : totalPnlUsdt / totalCostUsdt * 100;
+  const costCoveragePct = rows.length ? costRows.length / rows.length * 100 : null;
+  const largestPosition = totalValueUsdt
+    ? valuedRows.reduce((largest, row) => row.valueUsdt > (largest?.valueUsdt || 0) ? row : largest, null)
+    : null;
+  const manualUpdatedAt = Object.values(manualHoldingsConfig.holdings || {})
+    .map((item) => item?.updatedAt)
+    .filter(Boolean)
+    .sort()
+    .at(-1);
+  const dataTime = [binanceAccount?.lastSyncedAt, manualUpdatedAt].filter(Boolean).sort().at(-1) || null;
+
+  return {
+    rows,
+    totalValueUsdt,
+    totalPnlUsdt,
+    totalPnlPct,
+    costCoveragePct,
+    missingCostCount: rows.filter((row) => row.avgCostUsdt === null).length,
+    unpricedCount: rows.filter((row) => row.valueUsdt === null).length,
+    matchedCount: rows.filter((row) => row.inAssetPool).length,
+    unmatchedCount: rows.filter((row) => !row.inAssetPool).length,
+    largestPosition,
+    largestPositionPct: largestPosition && totalValueUsdt ? largestPosition.valueUsdt / totalValueUsdt * 100 : null,
+    dataTime,
+  };
+}
+
 function renderBacktestSummary(model) {
   const cards = [
     { label: "累计收益", value: "待计算", helper: "策略总回报", tone: "slate", icon: "return" },
@@ -2921,10 +3015,12 @@ function renderBacktestSummary(model) {
 
 function renderBacktestPage(items, snapshot) {
   const model = buildBacktestModel(snapshot);
+  const holdingModel = buildCurrentHoldingPerformanceModel(items);
   renderBacktestSummary(model);
 
   document.getElementById("routeContent").innerHTML = `
     ${BacktestConfigBar(model)}
+    ${CurrentHoldingPerformanceCard(holdingModel)}
     <section class="backtest-layout">
       <div class="backtest-main-column">
         ${BacktestChartCard({
@@ -2956,6 +3052,93 @@ function renderBacktestPage(items, snapshot) {
       </div>
       ${BacktestDiagnosisPanel(model)}
     </section>
+  `;
+}
+
+function CurrentHoldingPerformanceCard(model) {
+  const totalValueText = model.totalValueUsdt === null ? "暂无估值" : formatUsdt(model.totalValueUsdt);
+  const pnlText = model.totalPnlUsdt === null ? "待成本" : formatSignedUsdt(model.totalPnlUsdt);
+  const pnlPctText = model.totalPnlPct === null ? "—" : pct(model.totalPnlPct, { sign: true });
+  const coverageText = model.costCoveragePct === null ? "—" : pct(model.costCoveragePct, { sign: false });
+  const largestText = model.largestPosition
+    ? `${model.largestPosition.symbol} · ${pct(model.largestPositionPct, { sign: false })}`
+    : "—";
+
+  return `
+    <section class="backtest-card current-holding-card">
+      <div class="backtest-card-header current-holding-header">
+        <div>
+          <h2>当前持仓表现</h2>
+          <p>读取总览中的手动持仓与 Binance 只读账户；这里展示当前浮动表现，不代表历史回测收益。</p>
+        </div>
+        ${SettingsMiniBadge(model.rows.length ? `${model.rows.length} 个持仓` : "暂无持仓", model.rows.length ? "good" : "neutral")}
+      </div>
+      ${model.rows.length ? `
+        <section class="current-holding-summary">
+          ${CurrentHoldingStat("当前持仓市值", totalValueText, model.unpricedCount ? `${model.unpricedCount} 个未估值` : "可估值持仓汇总", "green")}
+          ${CurrentHoldingStat("当前浮动盈亏", pnlText, pnlPctText, model.totalPnlUsdt === null ? "slate" : model.totalPnlUsdt >= 0 ? "green" : "red")}
+          ${CurrentHoldingStat("成本覆盖率", coverageText, `${model.missingCostCount} 个待成本`, "blue")}
+          ${CurrentHoldingStat("最大单一持仓", largestText, "按当前市值占比", "amber")}
+        </section>
+        <div class="backtest-table-wrap current-holding-table-wrap">
+          <table class="backtest-small-table current-holding-table">
+            <thead>
+              <tr>
+                <th>品种</th>
+                <th>来源</th>
+                <th>数量</th>
+                <th>平均成本</th>
+                <th>当前价格</th>
+                <th>当前市值</th>
+                <th>浮动盈亏</th>
+                <th>收益率</th>
+                <th>动作</th>
+                <th>备注</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${model.rows.map(CurrentHoldingRow).join("")}
+            </tbody>
+          </table>
+        </div>
+        <div class="current-holding-quality">
+          <span>资产池匹配 ${model.matchedCount} 个，账户外部持仓 ${model.unmatchedCount} 个。</span>
+          <span>数据时间：${model.dataTime ? formatDateTime(model.dataTime) : "尚未同步"}</span>
+        </div>
+      ` : `
+        <div class="empty-state compact">暂无当前持仓数据。请先在总览中保存手动持仓，或在设置中配置 Binance 只读账户后刷新。</div>
+      `}
+    </section>
+  `;
+}
+
+function CurrentHoldingStat(label, value, helper, tone) {
+  return `
+    <div class="current-holding-stat ${tone}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(helper)}</small>
+    </div>
+  `;
+}
+
+function CurrentHoldingRow(row) {
+  return `
+    <tr>
+      <td class="symbol-cell">
+        ${escapeHtml(row.symbol)}
+        <small>${escapeHtml(row.name)}</small>
+      </td>
+      <td><span class="holding-source-badge ${row.source}">${escapeHtml(row.sourceLabel)}</span></td>
+      <td>${formatAssetQuantity(row.quantity)}</td>
+      <td>${row.avgCostUsdt === null ? "待成本" : formatUsdt(row.avgCostUsdt)}</td>
+      <td>${row.currentPrice === null ? "未估值" : formatUsdt(row.currentPrice)}</td>
+      <td>${row.valueUsdt === null ? "—" : formatUsdt(row.valueUsdt)}</td>
+      <td class="${changeClass(row.pnlUsdt)}">${row.pnlUsdt === null ? "待成本" : formatSignedUsdt(row.pnlUsdt)}</td>
+      <td class="${changeClass(row.pnlPct)}">${row.pnlPct === null ? "—" : pct(row.pnlPct, { sign: true })}</td>
+      <td>${row.poolItem ? InstrumentActionBadge(row.poolItem) : `<span class="instrument-action-none">—</span>`}</td>
+      <td>${escapeHtml(row.note)}</td>
+    </tr>
   `;
 }
 
