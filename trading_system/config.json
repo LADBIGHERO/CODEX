@@ -53,6 +53,22 @@
     "bearish_volume_multiplier": 1.2,
     "long_body_ratio": 0.6
   },
+  "short_term": {
+    "timeframe_days": [2, 14],
+    "min_avg_dollar_volume_20": 50000000,
+    "sma20_flat_slope_pct_3d": -0.2,
+    "breakout_window_days": 14,
+    "pullback_lookback_days": 5,
+    "near_support_pct": 1.0,
+    "breakout_buffer_pct": 0.2,
+    "volume_multiplier": 1.2,
+    "stop_buffer_pct": 0.2,
+    "max_stop_distance_pct": 4.0,
+    "min_risk_reward": 1.8,
+    "second_target_r": 2.0,
+    "risk_per_trade_pct": 1.0,
+    "weak_momentum_5d_pct": -2.0
+  },
   "execution": {
     "buy_limit_buffer_pct": 0.2,
     "sell_limit_buffer_pct": 0.2,

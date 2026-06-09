@@ -1962,7 +1962,8 @@ td > small {
 }
 
 .signal-type-badge.trend,
-.signal-type-badge.breakout {
+.signal-type-badge.breakout,
+.signal-type-badge.short_buy {
   background: var(--green-soft);
   color: var(--green-dark);
 }
@@ -1978,7 +1979,8 @@ td > small {
   color: #1d4f8f;
 }
 
-.signal-type-badge.risk {
+.signal-type-badge.risk,
+.signal-type-badge.short_sell {
   background: var(--red-soft);
   color: var(--red);
 }
@@ -2071,6 +2073,116 @@ td > small {
   margin: 0;
   color: #344054;
   text-align: right;
+}
+
+.short-term-plan-card {
+  margin-top: 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+}
+
+.short-term-plan-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--soft-line);
+}
+
+.short-term-plan-header h3 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.short-term-plan-header p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.short-term-rr {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid #d7dee8;
+  background: var(--neutral-soft);
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.short-term-rr.good {
+  border-color: #bfe8d6;
+  background: var(--success-soft);
+  color: var(--green-dark);
+}
+
+.short-term-rr.weak {
+  border-color: #f8dda4;
+  background: var(--amber-soft);
+  color: #b45309;
+}
+
+.short-term-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.short-term-plan-grid div {
+  min-height: 48px;
+  padding: 9px 10px;
+  border: 1px solid var(--soft-line);
+  border-radius: 9px;
+  background: #fff;
+}
+
+.short-term-plan-grid dt {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.short-term-plan-grid dd {
+  margin: 5px 0 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.short-term-plan-note {
+  margin-top: 10px;
+  padding: 10px 11px;
+  border: 1px solid var(--soft-line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.short-term-plan-note span {
+  display: block;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.short-term-plan-note p {
+  margin: 5px 0 0;
+  color: #475467;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.short-term-plan-note.muted {
+  background: #f8fafc;
 }
 
 .timeline-section {
@@ -4127,6 +4239,7 @@ body {
 .status-badge.stable,
 .signal-type-badge.trend,
 .signal-type-badge.breakout,
+.signal-type-badge.short_buy,
 .signal-status-badge.confirmed,
 .signal-status-badge.resolved,
 .monitor-status-badge.normal,
@@ -4167,6 +4280,7 @@ body {
 
 .status-badge.damaged,
 .signal-type-badge.risk,
+.signal-type-badge.short_sell,
 .signal-status-badge.warning,
 .signal-status-badge.invalidated,
 .importance-badge.high,

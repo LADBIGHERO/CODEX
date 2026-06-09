@@ -111,6 +111,8 @@ const signalTypeLabels = {
   resistance: "阻力",
   momentum: "动量",
   risk: "风险",
+  short_buy: "建议买入",
+  short_sell: "建议卖出",
 };
 
 const signalStatusLabels = {
@@ -2198,6 +2200,35 @@ function buildSignalEvents(items, snapshot) {
   items.forEach((item) => {
     const notes = item.notes || [];
     const risks = item.risk_reasons || [];
+    const shortTerm = item.short_term || null;
+    const accountPosition = AccountPositionForSignalItem(item);
+
+    if (shortTerm?.sell_signal && accountPosition) {
+      const reasonText = shortTerm.sell_reasons?.[0] || "短线风控触发";
+      events.push(createSignalEvent(item, {
+        type: "short_sell",
+        content: reasonText,
+        title: "建议卖出",
+        status: "warning",
+        importance: "high",
+        occurredAt: snapshotTime,
+        shortTerm,
+        accountPosition,
+      }));
+    }
+
+    if (shortTerm?.buy_signal && item.role !== "cash" && !accountPosition) {
+      const triggerText = shortTermTriggerLabel(shortTerm);
+      events.push(createSignalEvent(item, {
+        type: "short_buy",
+        content: `${triggerText}，2-14 天短线机会`,
+        title: "建议买入",
+        status: "new",
+        importance: Number(shortTerm.risk_reward || 0) >= 2 ? "high" : "medium",
+        occurredAt: snapshotTime,
+        shortTerm,
+      }));
+    }
 
     if (risks.length > 0) {
       const content = risks.includes("close_below_sma200")
@@ -2301,6 +2332,13 @@ function createSignalEvent(item, details) {
 }
 
 function buildSignalEventExplanation(item, details) {
+  if (details.type === "short_buy") {
+    return `${item.symbol} 满足 ${shortTermTriggerLabel(details.shortTerm)} 的 2-14 天短线买入条件；入场、止损、止盈和 R/R 见下方短线交易计划。`;
+  }
+  if (details.type === "short_sell") {
+    const reasonText = details.shortTerm?.sell_reasons?.join("、") || details.content;
+    return `${item.symbol} 当前持仓触发短线风控：${reasonText}。该提示仅用于持仓风险处理，不代表自动下单。`;
+  }
   if (details.type === "risk") {
     return `${item.symbol} 当前风险状态为${details.content}，趋势过滤${item.trend_ok ? "仍通过" : "未通过"}。`;
   }
@@ -2322,6 +2360,18 @@ function importanceRank(value) {
   return 1;
 }
 
+function AccountPositionForSignalItem(item) {
+  const currentPrice = typeof item.current_price === "number" ? item.current_price : item.close;
+  const position = AccountPositionForSymbol(item.symbol, currentPrice);
+  return position && Number.isFinite(position.quantity) && position.quantity > 0 ? position : null;
+}
+
+function shortTermTriggerLabel(shortTerm) {
+  if (shortTerm?.trigger === "pullback") return "回踩站稳";
+  if (shortTerm?.trigger === "breakout") return "有效突破";
+  return "短线条件";
+}
+
 function renderSignalPage(items, snapshot) {
   const allEvents = buildSignalEvents(items, snapshot);
   renderSignalSummary(allEvents);
@@ -2341,7 +2391,7 @@ function renderSignalPage(items, snapshot) {
     <section class="signal-filter-bar" aria-label="信号筛选">
       ${FilterSelect("range", "时间", ["今日", "近 7 日", "近 30 日", "全部"])}
       ${FilterSelect("etf", "ETF", ["全部", "QQQ", "SPY", "IWM", "GLD", "TLT", "SGOV"])}
-      ${FilterSelect("type", "类型", ["全部", "趋势", "突破", "支撑", "阻力", "动量", "风险"])}
+      ${FilterSelect("type", "类型", ["全部", "建议买入", "建议卖出", "趋势", "突破", "支撑", "阻力", "动量", "风险"])}
       ${FilterSelect("status", "状态", ["全部", "新触发", "待确认", "已确认", "风险中", "已失效", "已解除"])}
       ${FilterSelect("importance", "重要性", ["全部", "高", "中", "低"])}
       <label class="filter-search">
@@ -2459,6 +2509,8 @@ function SignalDetailPanel(event) {
         <div><dt>风险状态</dt><dd>${escapeHtml(event.riskStatus || "无")}</dd></div>
       </dl>
 
+      ${ShortTermSignalPlan(event)}
+
       <section class="signal-note">
         <span>信号说明</span>
         <p>${escapeHtml(event.explanation)}</p>
@@ -2469,6 +2521,47 @@ function SignalDetailPanel(event) {
         ${SignalTimeline(event.timeline)}
       </section>
     </aside>
+  `;
+}
+
+function ShortTermSignalPlan(event) {
+  const shortTerm = event.shortTerm;
+  if (!shortTerm) return "";
+  const maxPositionText = shortTerm.account_equity_configured && Number.isFinite(shortTerm.max_position_value)
+    ? formatUsdt(shortTerm.max_position_value)
+    : "需配置账户净值后计算";
+  const rejectText = shortTerm.reject_reasons?.length
+    ? shortTerm.reject_reasons.slice(0, 3).join("、")
+    : "当前短线条件通过";
+  const sellReasonText = shortTerm.sell_reasons?.length
+    ? shortTerm.sell_reasons.join("、")
+    : "未触发持仓卖出条件";
+  return `
+    <section class="short-term-plan-card">
+      <div class="short-term-plan-header">
+        <div>
+          <h3>2-14 天短线交易计划</h3>
+          <p>${escapeHtml(shortTermTriggerLabel(shortTerm))} · ${escapeHtml(shortTerm.timeframe || "2-14D")} · 行业风险${escapeHtml(shortTerm.industry_risk_status === "not_connected" ? "未接入" : "已接入")}</p>
+        </div>
+        <span class="short-term-rr ${Number(shortTerm.risk_reward || 0) >= 1.8 ? "good" : "weak"}">R/R ${shortTerm.risk_reward === null || shortTerm.risk_reward === undefined ? "—" : fmt.format(shortTerm.risk_reward)}</span>
+      </div>
+      <dl class="short-term-plan-grid">
+        <div><dt>参考入场</dt><dd>${price(shortTerm.entry_price)}</dd></div>
+        <div><dt>止损位</dt><dd>${price(shortTerm.stop_price)}</dd></div>
+        <div><dt>第一止盈</dt><dd>${price(shortTerm.target_price)}</dd></div>
+        <div><dt>第二目标</dt><dd>${price(shortTerm.target2_price)}</dd></div>
+        <div><dt>止损距离</dt><dd>${pct(shortTerm.stop_distance_pct)}</dd></div>
+        <div><dt>仓位上限</dt><dd>${escapeHtml(maxPositionText)}</dd></div>
+      </dl>
+      <div class="short-term-plan-note">
+        <span>${event.type === "short_sell" ? "卖出触发" : "买入校验"}</span>
+        <p>${escapeHtml(event.type === "short_sell" ? sellReasonText : rejectText)}</p>
+      </div>
+      <div class="short-term-plan-note muted">
+        <span>风控提示</span>
+        <p>单笔风险按账户净值 ${pct(shortTerm.risk_per_trade_pct)} 估算；连续亏损 2-3 笔后建议降低仓位或暂停交易。</p>
+      </div>
+    </section>
   `;
 }
 
