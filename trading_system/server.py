@@ -13,6 +13,7 @@ import copy
 import csv
 import datetime as dt
 import json
+import math
 import mimetypes
 import os
 import re
@@ -51,6 +52,43 @@ MAX_PAPER_EQUITY_POINTS = 500
 MAX_PAPER_PROCESSED_SIGNALS = 1000
 MAX_ASSET_POOL_GROUPS = 10
 MAX_ASSET_POOL_GROUP_SYMBOLS = 30
+
+EDITABLE_CONFIG_PATHS = {
+    "rules.trend_sma_days",
+    "rules.short_sma_days",
+    "rules.support_sma_days",
+    "rules.momentum_days",
+    "rules.short_momentum_days",
+    "rules.risk_slots",
+    "rules.risk_slot_weight_pct",
+    "rules.defensive_weight_pct",
+    "rules.risk_off_defensive_weight_pct",
+    "rules.cash_floor_pct",
+    "rules.rebalance_threshold_pct",
+    "rules.drawdown_reduce_pct",
+    "rules.drawdown_cash_pct",
+    "price_behavior.breakout_hold_days",
+    "price_behavior.near_support_pct",
+    "price_behavior.near_resistance_pct",
+    "price_behavior.breakout_window_days",
+    "price_behavior.failed_breakout_pct",
+    "price_behavior.bearish_volume_multiplier",
+    "execution.buy_limit_buffer_pct",
+    "execution.sell_limit_buffer_pct",
+    "short_term.min_avg_dollar_volume_20",
+    "short_term.sma20_flat_slope_pct_3d",
+    "short_term.breakout_window_days",
+    "short_term.pullback_lookback_days",
+    "short_term.near_support_pct",
+    "short_term.breakout_buffer_pct",
+    "short_term.volume_multiplier",
+    "short_term.stop_buffer_pct",
+    "short_term.max_stop_distance_pct",
+    "short_term.min_risk_reward",
+    "short_term.second_target_r",
+    "short_term.risk_per_trade_pct",
+    "short_term.weak_momentum_5d_pct",
+}
 
 DEFAULT_ASSET_POOL_GROUPS = [
     {"id": "core_strategy", "name": "核心策略资产", "symbols": ["QQQ", "SPY", "GLD", "SGOV"], "locked": False},
@@ -165,6 +203,59 @@ def clean_float(value: object, default: float = 0.0, minimum: float | None = Non
     if minimum is not None and number < minimum:
         return minimum
     return number
+
+
+def config_value_at_path(config: dict[str, object], path: str) -> object:
+    current: object = config
+    for key in path.split("."):
+        if not isinstance(current, dict) or key not in current:
+            raise KeyError(path)
+        current = current[key]
+    return current
+
+
+def normalize_config_edit_value(path: str, value: object, current_value: object) -> object:
+    if isinstance(current_value, bool):
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+    if isinstance(current_value, int) and not isinstance(current_value, bool):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"Invalid numeric value for {path}")
+        return int(round(number))
+    if isinstance(current_value, float):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"Invalid numeric value for {path}")
+        return number
+    if isinstance(current_value, str):
+        return str(value).strip()
+    raise ValueError(f"Unsupported editable value for {path}")
+
+
+def apply_config_edits(config: dict[str, object], changes: object) -> dict[str, object]:
+    if not isinstance(changes, dict):
+        raise ValueError("Missing config changes")
+    next_config = copy.deepcopy(config)
+    for path, value in changes.items():
+        path = str(path or "").strip()
+        if path not in EDITABLE_CONFIG_PATHS:
+            raise ValueError(f"Unsupported config path: {path}")
+        current_value = config_value_at_path(next_config, path)
+        normalized = normalize_config_edit_value(path, value, current_value)
+        target: object = next_config
+        parts = path.split(".")
+        for key in parts[:-1]:
+            if not isinstance(target, dict):
+                raise ValueError(f"Invalid config path: {path}")
+            target = target[key]
+        if not isinstance(target, dict):
+            raise ValueError(f"Invalid config path: {path}")
+        target[parts[-1]] = normalized
+    return next_config
 
 
 def sanitize_manual_holdings_config(payload: object) -> dict[str, object]:
@@ -1274,6 +1365,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/config":
+            self.handle_config_post()
+            return
         if parsed.path == "/api/asset-pool":
             self.handle_asset_pool_post()
             return
@@ -1321,7 +1415,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "server": self.app.status_payload(),
                     "capabilities": {
                         "read_config": True,
-                        "save_draft": False,
+                        "save_draft": True,
                         "run_validation_backtest": False,
                         "publish_config": False,
                         "rollback_config": False,
@@ -1335,6 +1429,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "snapshot": snapshot, "warning": str(exc)})
             except Exception:
                 self.send_json({"ok": False, "error": str(exc), "server": self.app.status_payload()}, HTTPStatus.BAD_GATEWAY)
+
+    def handle_config_post(self) -> None:
+        try:
+            payload = self.read_json_body()
+            changes = payload.get("changes") if isinstance(payload, dict) else None
+            current = self.app.load_main_config()
+            next_config = apply_config_edits(current, changes)
+            saved = self.app.save_main_config(next_config)
+            self.send_json(
+                {
+                    "ok": True,
+                    "config": saved,
+                    "server": self.app.status_payload(),
+                    "capabilities": {
+                        "read_config": True,
+                        "save_draft": True,
+                        "run_validation_backtest": False,
+                        "publish_config": False,
+                        "rollback_config": False,
+                    },
+                }
+            )
+        except json.JSONDecodeError as exc:
+            self.send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc), "server": self.app.status_payload()}, HTTPStatus.BAD_REQUEST)
 
     def handle_asset_pool_get(self) -> None:
         try:
@@ -1618,6 +1738,24 @@ class DashboardServer(ThreadingHTTPServer):
         self.paper_account_path = paper_account_path
         self.ui_cache_path = ui_cache_path
         self.tailscale_status = detect_tailscale()
+
+    def load_main_config(self) -> dict[str, object]:
+        with self.config_path.open("r", encoding="utf-8") as f:
+            config = json.load(f)
+        if not isinstance(config, dict):
+            raise ValueError("Config root must be an object")
+        return config
+
+    def save_main_config(self, config: dict[str, object]) -> dict[str, object]:
+        if not isinstance(config, dict):
+            raise ValueError("Config root must be an object")
+        self.config_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+        with temp_path.open("w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(temp_path, self.config_path)
+        return config
 
     def load_asset_pool_config(self) -> dict[str, object]:
         if not self.asset_pool_path.exists():

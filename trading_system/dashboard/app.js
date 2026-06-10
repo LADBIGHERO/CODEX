@@ -162,6 +162,7 @@ const alertSeverityLabels = {
 };
 
 const settingsCategories = [
+  { key: "current_strategy", label: "当前策略配置", icon: "◎" },
   { key: "strategy", label: "策略参数", icon: "☷" },
   { key: "assets", label: "资产池与角色", icon: "♙" },
   { key: "data", label: "数据与计算", icon: "▣" },
@@ -173,8 +174,16 @@ const settingsCategories = [
 
 const settingsFieldLabels = {
   "rules.trend_sma_days": "长期趋势均线",
+  "rules.short_sma_days": "短线均线",
+  "rules.support_sma_days": "支撑均线",
   "rules.momentum_days": "主要动量周期",
   "rules.short_momentum_days": "辅助动量周期",
+  "rules.risk_slots": "风险资产槽位",
+  "rules.risk_slot_weight_pct": "单个风险槽位",
+  "rules.defensive_weight_pct": "防御仓位",
+  "rules.risk_off_defensive_weight_pct": "Risk-Off 防御仓位",
+  "rules.cash_floor_pct": "现金底线",
+  "rules.rebalance_threshold_pct": "再平衡阈值",
   "rules.drawdown_reduce_pct": "减仓回撤阈值",
   "rules.drawdown_cash_pct": "现金防守阈值",
   "price_behavior.breakout_hold_days": "突破站稳确认",
@@ -185,6 +194,19 @@ const settingsFieldLabels = {
   "price_behavior.bearish_volume_multiplier": "放量风险倍数",
   "execution.buy_limit_buffer_pct": "买入限价缓冲",
   "execution.sell_limit_buffer_pct": "卖出限价缓冲",
+  "short_term.min_avg_dollar_volume_20": "20 日均成交额过滤",
+  "short_term.sma20_flat_slope_pct_3d": "SMA20 斜率下限",
+  "short_term.breakout_window_days": "短线突破窗口",
+  "short_term.pullback_lookback_days": "回踩观察窗口",
+  "short_term.near_support_pct": "短线支撑接近阈值",
+  "short_term.breakout_buffer_pct": "短线突破缓冲",
+  "short_term.volume_multiplier": "短线放量倍数",
+  "short_term.stop_buffer_pct": "止损缓冲",
+  "short_term.max_stop_distance_pct": "最大止损距离",
+  "short_term.min_risk_reward": "最低风险收益比",
+  "short_term.second_target_r": "第二目标 R",
+  "short_term.risk_per_trade_pct": "单笔风险",
+  "short_term.weak_momentum_5d_pct": "弱动量卖出阈值",
 };
 
 const routeTitles = {
@@ -201,7 +223,7 @@ let selectedSymbol = "QQQ";
 let selectedGroupId = "core_strategy";
 let selectedSignalId = null;
 let selectedMonitorId = null;
-let selectedSettingsCategory = "strategy";
+let selectedSettingsCategory = "current_strategy";
 let selectedPortfolioMode = "model";
 let rightRailMode = "detail";
 let openMenuInstrumentId = null;
@@ -716,9 +738,13 @@ function normalizeSettingValue(path, value) {
 
 function formatSettingValue(path, value) {
   if (value === undefined || value === null || value === "") return "未配置";
+  if (Array.isArray(value)) return value.join(" - ");
+  if (path.includes("min_avg_dollar_volume")) return `${fmt.format(Number(value) / 1000000)}M`;
   if (path.includes("sma_days")) return `SMA${value}`;
   if (path.includes("momentum_days") || path.includes("short_momentum_days") || path.includes("window_days")) return `${value}D`;
+  if (path.includes("lookback_days")) return `${value}D`;
   if (path.includes("hold_days")) return `${value} 个交易日`;
+  if (path.includes("_r") || path.includes("risk_reward")) return `${fmt.format(value)}R`;
   if (path.includes("_pct") || path.includes("threshold_pct") || path.includes("buffer_pct")) return `${fmt.format(value)}%`;
   if (path.includes("volume_multiplier")) return `${fmt.format(value)}x`;
   if (typeof value === "boolean") return value ? "已启用" : "未启用";
@@ -4387,6 +4413,27 @@ async function resetPaperAccount() {
   }
 }
 
+async function saveCurrentStrategyConfig() {
+  const changes = { ...settingsDraft };
+  if (!Object.keys(changes).length) return;
+  try {
+    const response = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ changes }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "策略配置保存失败");
+    currentConfig = payload.config;
+    settingsCapabilities = payload.capabilities || settingsCapabilities;
+    settingsDraft = {};
+    setNotice("当前策略已保存，正在按新配置刷新信号。", "good");
+    await refresh({ background: true });
+  } catch (error) {
+    setNotice(error.message || "策略配置保存失败");
+  }
+}
+
 function PortfolioStructureCard(model) {
   const rows = model.structureRows.map((row, index) => `
     <tr class="${index === 0 ? "selected" : ""}">
@@ -4638,6 +4685,7 @@ function SettingsCategoryNav() {
 
 function SettingsCategoryIcon(key) {
   const icons = {
+    current_strategy: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M4 12h4l2.2-5 3.6 10L16 12h4" /><path d="M5 19h14" /><path d="M5 5h14" /></svg>`,
     strategy: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M5 7h14" /><path d="M5 12h14" /><path d="M5 17h14" /><path d="M9 5v4" /><path d="M15 10v4" /><path d="M11 15v4" /></svg>`,
     assets: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M6 6h5v5H6z" /><path d="M13 6h5v5h-5z" /><path d="M6 13h5v5H6z" /><path d="M13 13h5v5h-5z" /></svg>`,
     data: `<svg viewBox="0 0 24 24" focusable="false" aria-hidden="true"><path d="M5 19h14" /><path d="M8 16v-6" /><path d="M12 16V7" /><path d="M16 16v-4" /></svg>`,
@@ -4667,6 +4715,7 @@ function SettingsMainPanel(model, items, snapshot) {
 
 function SettingsCategorySubtitle(key) {
   const subtitles = {
+    current_strategy: "集中查看和修改当前策略；修改先形成本地草稿，未发布前不影响正式信号。",
     strategy: "展示当前策略参数；修改仅保存在本页本地草稿，不影响正式信号。",
     assets: "基于真实资产池配置展示 ETF 角色与启用状态。",
     data: "展示当前数据来源、计算周期与可用运行信息。",
@@ -4683,6 +4732,7 @@ function SettingsCategoryContent(key, model, items, snapshot) {
   if (!model.hasConfig) {
     return `<div class="settings-empty-state">未能读取配置文件：${escapeHtml(model.configError || "配置接口未返回数据")}</div>`;
   }
+  if (key === "current_strategy") return CurrentStrategyPanel(model);
   if (key === "strategy") return StrategySettingsForm(model);
   if (key === "assets") return AssetPoolSettingsPanel(model, items, snapshot);
   if (key === "data") return DataComputationSettingsPanel(model, snapshot);
@@ -4729,6 +4779,172 @@ function SettingsReadOnly({ label, value, helper, tone = "" }) {
       <span>${escapeHtml(label)}</span>
       <strong>${escapeHtml(value ?? "未配置")}</strong>
       ${helper ? `<small>${escapeHtml(helper)}</small>` : ""}
+    </div>
+  `;
+}
+
+function CurrentStrategyPanel(model) {
+  const config = model.config || {};
+  const universe = config.universe || {};
+  const shortTerm = config.short_term || {};
+  const listText = (list) => Array.isArray(list) && list.length ? list.join(" / ") : "未配置";
+  const timeframe = Array.isArray(shortTerm.timeframe_days) && shortTerm.timeframe_days.length >= 2
+    ? `${shortTerm.timeframe_days[0]}-${shortTerm.timeframe_days[1]} 天`
+    : "未配置";
+
+  const overviewRows = [
+    SettingsReadOnly({ label: "策略类型", value: "趋势 + 动量 + 风控过滤 + 短线信号", helper: "当前系统主策略框架" }),
+    SettingsReadOnly({ label: "交易周期", value: timeframe, helper: "短线建议买入/卖出的目标持有周期" }),
+    SettingsReadOnly({ label: "风险资产", value: listText(universe.risk_assets), helper: "参与 Risk-On 轮动与核心风险暴露" }),
+    SettingsReadOnly({ label: "防御资产", value: listText(universe.defensive_assets), helper: "Risk-Off 或防御状态下优先观察" }),
+    SettingsReadOnly({ label: "现金停泊", value: listText(universe.cash_assets), helper: "现金或短债停泊品种" }),
+    SettingsReadOnly({ label: "个股观察池", value: `${(universe.stock_assets || []).length} 只`, helper: listText(universe.stock_assets) }),
+  ];
+
+  const allocationRows = [
+    SettingsSelect({
+      label: "风险资产槽位",
+      path: "rules.risk_slots",
+      options: [1, 2, 3].map((value) => ({ value, label: `${value} 个` })),
+      helper: "允许同时配置的风险资产数量",
+    }),
+    SettingsSelect({
+      label: "单个风险槽位",
+      path: "rules.risk_slot_weight_pct",
+      options: [20, 25, 30, 35, 40].map((value) => ({ value, label: `${value}%` })),
+      helper: "Risk-On 时每个风险槽位的目标仓位",
+    }),
+    SettingsSelect({
+      label: "防御仓位",
+      path: "rules.defensive_weight_pct",
+      options: [10, 15, 20, 25, 30].map((value) => ({ value, label: `${value}%` })),
+      helper: "常规防御资产目标仓位",
+    }),
+    SettingsSelect({
+      label: "Risk-Off 防御仓位",
+      path: "rules.risk_off_defensive_weight_pct",
+      options: [20, 30, 40, 50].map((value) => ({ value, label: `${value}%` })),
+      helper: "风险关闭时防御资产目标仓位",
+    }),
+    SettingsSelect({
+      label: "现金底线",
+      path: "rules.cash_floor_pct",
+      options: [10, 15, 20, 25, 30].map((value) => ({ value, label: `${value}%` })),
+      helper: "组合保留的最低现金/停泊仓位",
+    }),
+    SettingsSelect({
+      label: "再平衡阈值",
+      path: "rules.rebalance_threshold_pct",
+      options: [3, 5, 8, 10].map((value) => ({ value, label: `${value}%` })),
+      helper: "偏离目标仓位达到该幅度才提示再平衡",
+    }),
+  ];
+
+  const shortTermRows = [
+    SettingsSelect({
+      label: "20 日均成交额",
+      path: "short_term.min_avg_dollar_volume_20",
+      options: [
+        { value: 20000000, label: "20M" },
+        { value: 50000000, label: "50M" },
+        { value: 100000000, label: "100M" },
+        { value: 200000000, label: "200M" },
+      ],
+      helper: "过滤流动性不足的短线标的",
+    }),
+    SettingsSelect({
+      label: "单笔风险",
+      path: "short_term.risk_per_trade_pct",
+      options: [0.5, 0.75, 1, 1.5, 2].map((value) => ({ value, label: `${value}%` })),
+      helper: "用于短线建议仓位和模拟盘风险预算",
+    }),
+    SettingsSelect({
+      label: "最大止损距离",
+      path: "short_term.max_stop_distance_pct",
+      options: [2, 3, 4, 5, 6].map((value) => ({ value, label: `${value}%` })),
+      helper: "止损过远时放弃建议买入",
+    }),
+    SettingsSelect({
+      label: "最低风险收益比",
+      path: "short_term.min_risk_reward",
+      options: [1.5, 1.8, 2, 2.5, 3].map((value) => ({ value, label: `1:${value}` })),
+      helper: "低于该盈亏比时不生成建议买入",
+    }),
+    SettingsSelect({
+      label: "短线突破窗口",
+      path: "short_term.breakout_window_days",
+      options: [10, 14, 20].map((value) => ({ value, label: `${value}D` })),
+      helper: "用于识别近端平台或区间突破",
+    }),
+    SettingsSelect({
+      label: "短线放量倍数",
+      path: "short_term.volume_multiplier",
+      options: [1, 1.2, 1.5, 2].map((value) => ({ value, label: `${value.toFixed(1)}x` })),
+      helper: "突破确认时的成交量参考",
+    }),
+    SettingsSelect({
+      label: "止损缓冲",
+      path: "short_term.stop_buffer_pct",
+      options: [0.1, 0.2, 0.3, 0.5].map((value) => ({ value, label: `${value}%` })),
+      helper: "止损放在技术失效位下方的缓冲",
+    }),
+    SettingsSelect({
+      label: "弱动量卖出阈值",
+      path: "short_term.weak_momentum_5d_pct",
+      options: [-1, -2, -3, -5].map((value) => ({ value, label: `${value}%` })),
+      helper: "短线动量明显转弱时提示退出",
+    }),
+  ];
+
+  const filterRows = [
+    SettingsSelect({
+      label: "长期趋势均线",
+      path: "rules.trend_sma_days",
+      options: [150, 200, 250].map((value) => ({ value, label: `SMA${value}` })),
+      helper: "主趋势过滤",
+    }),
+    SettingsSelect({
+      label: "短线均线",
+      path: "rules.short_sma_days",
+      options: [10, 20, 30].map((value) => ({ value, label: `SMA${value}` })),
+      helper: "短线买入前提和卖出风险参考",
+    }),
+    SettingsSelect({
+      label: "支撑均线",
+      path: "rules.support_sma_days",
+      options: [50, 60, 100].map((value) => ({ value, label: `SMA${value}` })),
+      helper: "支撑/结构参考",
+    }),
+    SettingsSelect({
+      label: "主要动量周期",
+      path: "rules.momentum_days",
+      options: [63, 90, 126, 189].map((value) => ({ value, label: `${value}D` })),
+      helper: "候选排序与动量展示",
+    }),
+    SettingsSelect({
+      label: "辅助动量周期",
+      path: "rules.short_momentum_days",
+      options: [20, 63, 90, 126].map((value) => ({ value, label: `${value}D` })),
+      helper: "辅助观察指标",
+    }),
+    SettingsSelect({
+      label: "放量风险倍数",
+      path: "price_behavior.bearish_volume_multiplier",
+      options: [1.1, 1.2, 1.5, 2].map((value) => ({ value, label: `${value.toFixed(1)}x` })),
+      helper: "用于识别下跌放量风险",
+    }),
+  ];
+
+  return `
+    <div class="settings-form-body current-strategy-panel">
+      <div class="settings-guidance">
+        当前页集中展示正在读取的正式策略配置；修改会先进入本地草稿预览，正式保存/发布接口尚未接入前不会改变实际信号。
+      </div>
+      ${SettingsSection("策略总览", overviewRows)}
+      ${SettingsSection("仓位框架", allocationRows)}
+      ${SettingsSection("2-14 天短线规则", shortTermRows)}
+      ${SettingsSection("核心过滤", filterRows)}
+      ${SettingsActionBar(model)}
     </div>
   `;
 }
@@ -4838,7 +5054,7 @@ function SettingsActionBar(model) {
   return `
     <div class="settings-action-bar">
       <button class="icon-button" type="button" data-settings-action="reset" ${model.changes.length ? "" : "disabled"}>重置</button>
-      <button class="icon-button" type="button" disabled title="尚未接入草稿持久化接口">保存草稿</button>
+      <button class="icon-button" type="button" data-settings-action="save" ${model.changes.length && model.capabilities.save_draft ? "" : "disabled"} title="${model.capabilities.save_draft ? "保存到当前策略配置文件" : "尚未接入策略保存接口"}">保存当前策略</button>
       <button class="icon-button" type="button" disabled title="尚未接入真实验证回测入口">运行验证回测</button>
       <button class="icon-button primary" type="button" disabled title="尚未接入配置发布流程">发布配置</button>
     </div>
@@ -5945,6 +6161,10 @@ function bindSettingsEvents() {
       settingsDraft = {};
       render(lastSnapshot);
     });
+  });
+
+  document.querySelectorAll('[data-settings-action="save"]').forEach((button) => {
+    button.addEventListener("click", () => saveCurrentStrategyConfig());
   });
 
   document.querySelectorAll("[data-binance-test]").forEach((button) => {
