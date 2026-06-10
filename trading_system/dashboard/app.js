@@ -244,6 +244,9 @@ let paperAccount = {
   settings: {
     initialCashUsdt: 100000,
     riskPerTradePct: 1,
+    targetEtfWeightPct: 60,
+    targetStockWeightPct: 40,
+    maxSinglePositionPct: 15,
     autoRun: true,
   },
   cashUsdt: 100000,
@@ -3333,6 +3336,9 @@ function renderPaperPage(items, snapshot) {
 
 function PaperMetricsPanel(stats) {
   const initialCash = Number(paperAccount.settings?.initialCashUsdt || 100000);
+  const etfTargetPct = Number(paperAccount.settings?.targetEtfWeightPct ?? 60);
+  const stockTargetPct = Number(paperAccount.settings?.targetStockWeightPct ?? 40);
+  const singleCapPct = Number(paperAccount.settings?.maxSinglePositionPct ?? 15);
   const openRisk = paperPositionRows().reduce((sum, position) => {
     const stop = Number(position.stopPrice || 0);
     const current = Number(position.currentPrice || 0);
@@ -3349,6 +3355,9 @@ function PaperMetricsPanel(stats) {
         <div><dt>初始资金</dt><dd>${formatUsdt(initialCash)}</dd></div>
         <div><dt>当前净值</dt><dd>${formatUsdt(stats.equityUsdt)}</dd></div>
         <div><dt>持仓市值</dt><dd>${formatUsdt(stats.positionValueUsdt)}</dd></div>
+        <div><dt>ETF 仓位</dt><dd>${pct(stats.etfWeightPct)} / ${pct(etfTargetPct)}</dd></div>
+        <div><dt>个股仓位</dt><dd>${pct(stats.stockWeightPct)} / ${pct(stockTargetPct)}</dd></div>
+        <div><dt>单品种上限</dt><dd>${stats.largestPositionSymbol ? `${escapeHtml(stats.largestPositionSymbol)} ${pct(stats.largestPositionWeightPct)} / ${pct(singleCapPct)}` : `上限 ${pct(singleCapPct)}`}</dd></div>
         <div><dt>浮动盈亏</dt><dd class="${changeClass(stats.unrealizedPnlUsdt)}">${formatSignedUsdt(stats.unrealizedPnlUsdt)}</dd></div>
         <div><dt>估算开口风险</dt><dd>${formatUsdt(openRisk)}</dd></div>
         <div><dt>单笔风险</dt><dd>${pct(Number(paperAccount.settings?.riskPerTradePct || 1))}</dd></div>
@@ -4207,6 +4216,9 @@ function normalizePaperAccount(account) {
     settings: {
       initialCashUsdt: Number(account.settings?.initialCashUsdt || 100000),
       riskPerTradePct: Number(account.settings?.riskPerTradePct || 1),
+      targetEtfWeightPct: Number(account.settings?.targetEtfWeightPct ?? 60),
+      targetStockWeightPct: Number(account.settings?.targetStockWeightPct ?? 40),
+      maxSinglePositionPct: Number(account.settings?.maxSinglePositionPct ?? 15),
       autoRun: account.settings?.autoRun !== false,
     },
     cashUsdt: Number(account.cashUsdt || 0),
@@ -4233,31 +4245,59 @@ function paperCurrentPrice(symbol, items = lastSnapshot?.symbols || []) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
+function paperAssetTypeForPosition(position, items = lastSnapshot?.symbols || []) {
+  const item = snapshotItemMap(items).get(position?.symbol);
+  if (item?.role === "stock") return "stock";
+  if (item?.role === "cash") return "cash";
+  const rawType = String(position?.assetType || position?.asset_type || "").toLowerCase();
+  return ["stock", "cash"].includes(rawType) ? rawType : "etf";
+}
+
 function paperAccountStats(items = lastSnapshot?.symbols || []) {
   const positions = Object.values(paperAccount.positions || {});
   const cash = Number(paperAccount.cashUsdt || 0);
   let positionValue = 0;
   let unrealized = 0;
+  let etfValue = 0;
+  let stockValue = 0;
+  let largestPositionValue = 0;
+  let largestPositionSymbol = "";
   positions.forEach((position) => {
     const priceValue = paperCurrentPrice(position.symbol, items) ?? Number(position.lastPrice || position.avgCostUsdt || 0);
     const quantity = Number(position.quantity || 0);
     const avgCost = Number(position.avgCostUsdt || position.entryPrice || 0);
-    positionValue += quantity * priceValue;
+    const valueUsdt = quantity * priceValue;
+    const assetType = paperAssetTypeForPosition(position, items);
+    if (assetType === "stock") stockValue += valueUsdt;
+    if (assetType === "etf") etfValue += valueUsdt;
+    if (valueUsdt > largestPositionValue) {
+      largestPositionValue = valueUsdt;
+      largestPositionSymbol = position.symbol || "";
+    }
+    positionValue += valueUsdt;
     unrealized += (priceValue - avgCost) * quantity;
   });
   const closedTrades = (paperAccount.trades || []).filter((trade) => trade.side === "SELL" && trade.closesPosition);
   const wins = closedTrades.filter((trade) => Number(trade.realizedPnlUsdt || 0) > 0);
   const realized = (paperAccount.trades || []).reduce((sum, trade) => sum + Number(trade.realizedPnlUsdt || 0), 0);
+  const equity = cash + positionValue;
   return {
     cashUsdt: cash,
     positionValueUsdt: positionValue,
-    equityUsdt: cash + positionValue,
+    equityUsdt: equity,
     unrealizedPnlUsdt: unrealized,
     realizedPnlUsdt: realized,
     positionCount: positions.length,
     tradeCount: (paperAccount.trades || []).length,
     closedTradeCount: closedTrades.length,
     winRatePct: closedTrades.length ? wins.length / closedTrades.length * 100 : null,
+    etfValueUsdt: etfValue,
+    stockValueUsdt: stockValue,
+    etfWeightPct: equity > 0 ? etfValue / equity * 100 : 0,
+    stockWeightPct: equity > 0 ? stockValue / equity * 100 : 0,
+    largestPositionSymbol,
+    largestPositionValueUsdt: largestPositionValue,
+    largestPositionWeightPct: equity > 0 ? largestPositionValue / equity * 100 : 0,
   };
 }
 
