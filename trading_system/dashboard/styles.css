@@ -5367,17 +5367,19 @@ body {
 }
 
 .paper-table-wrap {
-  overflow-x: auto;
+  overflow-x: hidden;
 }
 
 .paper-table {
-  min-width: 940px;
+  width: 100%;
+  min-width: 0 !important;
   table-layout: fixed;
 }
 
 .paper-table th,
 .paper-table td {
-  padding: 11px 12px;
+  padding: 10px 9px;
+  white-space: normal;
 }
 
 .paper-table th {
@@ -5389,6 +5391,7 @@ body {
 .paper-table td {
   font-size: 13px;
   vertical-align: middle;
+  overflow-wrap: anywhere;
 }
 
 .paper-table th:nth-child(n + 2),
@@ -5402,7 +5405,7 @@ body {
 }
 
 .paper-table.trade {
-  min-width: 860px;
+  min-width: 0;
 }
 
 .paper-table.trade th:nth-child(1),
@@ -5414,6 +5417,50 @@ body {
 .paper-table.trade th:last-child,
 .paper-table.trade td:last-child {
   text-align: left;
+}
+
+.paper-table th:nth-child(1),
+.paper-table td:nth-child(1) { width: 8%; }
+.paper-table th:nth-child(2),
+.paper-table td:nth-child(2) { width: 10%; }
+.paper-table th:nth-child(3),
+.paper-table td:nth-child(3),
+.paper-table th:nth-child(5),
+.paper-table td:nth-child(5) { width: 10%; }
+.paper-table th:nth-child(4),
+.paper-table td:nth-child(4),
+.paper-table th:nth-child(8),
+.paper-table td:nth-child(8),
+.paper-table th:nth-child(9),
+.paper-table td:nth-child(9),
+.paper-table th:nth-child(10),
+.paper-table td:nth-child(10) { width: 8%; }
+.paper-table th:nth-child(6),
+.paper-table td:nth-child(6) { width: 7%; }
+.paper-table th:nth-child(7),
+.paper-table td:nth-child(7) { width: 13%; }
+.paper-table th:nth-child(11),
+.paper-table td:nth-child(11) { width: 10%; }
+
+.paper-table.trade th:nth-child(1),
+.paper-table.trade td:nth-child(1) { width: 8%; }
+.paper-table.trade th:nth-child(2),
+.paper-table.trade td:nth-child(2) { width: 8%; }
+.paper-table.trade th:nth-child(3),
+.paper-table.trade td:nth-child(3) { width: 8%; }
+.paper-table.trade th:nth-child(4),
+.paper-table.trade td:nth-child(4) { width: 13%; }
+.paper-table.trade th:nth-child(5),
+.paper-table.trade td:nth-child(5) { width: 11%; }
+.paper-table.trade th:nth-child(6),
+.paper-table.trade td:nth-child(6) { width: 11%; }
+.paper-table.trade th:nth-child(7),
+.paper-table.trade td:nth-child(7) { width: 10%; }
+.paper-table.trade th:nth-child(8),
+.paper-table.trade td:nth-child(8) {
+  width: 31%;
+  white-space: normal;
+  line-height: 1.45;
 }
 
 .paper-table small {
