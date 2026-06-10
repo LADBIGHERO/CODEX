@@ -43,8 +43,14 @@ let assetPoolCapabilities = {
 };
 
 const DASHBOARD_CACHE_KEY = "etfTradingDashboard.lastView.v1";
+const AUTO_REFRESH_INTERVAL_KEY = "etfTradingDashboard.autoRefreshIntervalMinutes.v1";
+const AUTO_REFRESH_INTERVAL_OPTIONS = [0, 5, 15, 30, 60];
+const DEFAULT_AUTO_REFRESH_INTERVAL_MINUTES = 15;
 const DASHBOARD_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 let dashboardCacheSaveTimer = null;
+let autoRefreshTimer = null;
+let autoRefreshIntervalMinutes = loadAutoRefreshIntervalSetting();
+let refreshInFlight = false;
 
 const etfDescriptions = {
   QQQ: "纳斯达克 100 指数 ETF",
@@ -4897,12 +4903,40 @@ function DataComputationSettingsPanel(model, snapshot) {
   const rows = [
     ["行情数据源", "Yahoo chart endpoint；支持本地 CSV 备用", "good"],
     ["价格口径", "使用 Yahoo 返回价格；分红口径未单独配置", "neutral"],
-    ["更新频率", "日频 · 收盘后；页面可手动刷新", "good"],
+    ["更新频率", `日频 · 收盘后；自动刷新 ${autoRefreshIntervalLabel()}`, autoRefreshIntervalMinutes ? "good" : "neutral"],
     ["最近成功计算", model.latestRun || "—", model.latestRun ? "good" : "neutral"],
     ["数据异常处理", "接口失败时展示错误，不生成伪数据", "neutral"],
     ["配置文件", snapshot.server?.config_path || "—", "neutral"],
   ];
-  return SettingsStatusList(rows, "数据与计算当前只展示真实可追踪信息；没有任务日志的项目显示为待接入。");
+  return `
+    <div class="settings-form-body">
+      <div class="settings-guidance">数据与计算当前只展示真实可追踪信息；没有任务日志的项目显示为待接入。</div>
+      <div class="settings-status-list">
+        ${rows.map(([label, value, tone]) => `
+          <div class="settings-status-row">
+            <span>${escapeHtml(label)}</span>
+            <strong class="${escapeHtml(tone)}">${escapeHtml(value)}</strong>
+          </div>
+        `).join("")}
+      </div>
+      <section class="settings-section">
+        <h3>自动刷新</h3>
+        <div class="settings-field-grid single">
+          <label class="settings-field">
+            <span>自动刷新间隔</span>
+            <select data-auto-refresh-interval>
+              ${AUTO_REFRESH_INTERVAL_OPTIONS.map((minutes) => `
+                <option value="${minutes}" ${minutes === autoRefreshIntervalMinutes ? "selected" : ""}>
+                  ${minutes ? `${minutes} 分钟` : "关闭"}
+                </option>
+              `).join("")}
+            </select>
+            <small>软件打开时先刷新一次；之后按此间隔后台刷新总览、信号和模拟盘。</small>
+          </label>
+        </div>
+      </section>
+    </div>
+  `;
 }
 
 function AccountConnectionsPanel(model) {
@@ -5144,6 +5178,44 @@ function setNotice(message, tone = "bad") {
   notice.hidden = false;
   notice.className = `notice ${tone}`;
   notice.textContent = message;
+}
+
+function sanitizeAutoRefreshInterval(value) {
+  const minutes = Number(value);
+  return AUTO_REFRESH_INTERVAL_OPTIONS.includes(minutes) ? minutes : DEFAULT_AUTO_REFRESH_INTERVAL_MINUTES;
+}
+
+function loadAutoRefreshIntervalSetting() {
+  try {
+    const raw = window.localStorage?.getItem(AUTO_REFRESH_INTERVAL_KEY);
+    if (raw === null || raw === undefined) return DEFAULT_AUTO_REFRESH_INTERVAL_MINUTES;
+    return sanitizeAutoRefreshInterval(raw);
+  } catch (_) {
+    return DEFAULT_AUTO_REFRESH_INTERVAL_MINUTES;
+  }
+}
+
+function saveAutoRefreshIntervalSetting(minutes) {
+  autoRefreshIntervalMinutes = sanitizeAutoRefreshInterval(minutes);
+  try {
+    window.localStorage?.setItem(AUTO_REFRESH_INTERVAL_KEY, String(autoRefreshIntervalMinutes));
+  } catch (_) {}
+  scheduleAutoRefresh();
+}
+
+function autoRefreshIntervalLabel(minutes = autoRefreshIntervalMinutes) {
+  const value = sanitizeAutoRefreshInterval(minutes);
+  return value > 0 ? `${value} 分钟` : "关闭";
+}
+
+function scheduleAutoRefresh() {
+  window.clearTimeout(autoRefreshTimer);
+  autoRefreshTimer = null;
+  if (!autoRefreshIntervalMinutes) return;
+  autoRefreshTimer = window.setTimeout(async () => {
+    await refresh({ background: true, auto: true });
+    scheduleAutoRefresh();
+  }, autoRefreshIntervalMinutes * 60 * 1000);
 }
 
 function plainObject(value) {
@@ -5862,6 +5934,12 @@ function bindSettingsEvents() {
     });
   });
 
+  document.querySelector("[data-auto-refresh-interval]")?.addEventListener("change", (event) => {
+    saveAutoRefreshIntervalSetting(event.target.value);
+    setNotice(`自动刷新间隔已设为 ${autoRefreshIntervalLabel()}`, "good");
+    render(lastSnapshot);
+  });
+
   document.querySelectorAll('[data-settings-action="reset"]').forEach((button) => {
     button.addEventListener("click", () => {
       settingsDraft = {};
@@ -5899,6 +5977,8 @@ function selectMonitorItem(id) {
 }
 
 async function refresh(options = {}) {
+  if (refreshInFlight) return false;
+  refreshInFlight = true;
   const background = Boolean(options.background && lastSnapshot);
   const button = document.getElementById("refreshButton");
   if (button) {
@@ -6010,12 +6090,18 @@ async function refresh(options = {}) {
       await runPaperAccountForSnapshot(payload.snapshot, { silent: true });
     }
     render(payload.snapshot);
+    return true;
   } catch (error) {
     setNotice(error.message);
+    return false;
   } finally {
+    refreshInFlight = false;
     if (button) {
       button.disabled = false;
       button.textContent = "刷新";
+    }
+    if (!options.auto) {
+      scheduleAutoRefresh();
     }
   }
 }
