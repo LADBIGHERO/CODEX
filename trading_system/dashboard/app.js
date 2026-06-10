@@ -3419,6 +3419,7 @@ function PaperPositionsTable(rows) {
               <th>成本</th>
               <th>现价</th>
               <th>市值</th>
+              <th>仓位</th>
               <th>浮动盈亏</th>
               <th>止损</th>
               <th>止盈一</th>
@@ -3427,7 +3428,7 @@ function PaperPositionsTable(rows) {
             </tr>
           </thead>
           <tbody>
-            ${rows.length ? rows.map(PaperPositionRow).join("") : `<tr><td colspan="10"><div class="empty-state compact">暂无模拟持仓；出现建议买入信号后会自动建立纸交易仓位。</div></td></tr>`}
+            ${rows.length ? rows.map(PaperPositionRow).join("") : `<tr><td colspan="11"><div class="empty-state compact">暂无模拟持仓；出现建议买入信号后会自动建立纸交易仓位。</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -3444,6 +3445,7 @@ function PaperPositionRow(row) {
       <td>${formatUsdt(row.avgCostUsdt)}</td>
       <td>${formatUsdt(row.currentPrice)}</td>
       <td>${formatUsdt(row.valueUsdt)}</td>
+      <td>${pct(row.weightPct)}</td>
       <td class="${changeClass(row.pnlUsdt)}">
         ${formatSignedUsdt(row.pnlUsdt)}
         <small>${row.pnlPct === null ? "—" : pct(row.pnlPct, { sign: true })}</small>
@@ -4334,7 +4336,7 @@ function paperAccountStats(items = lastSnapshot?.symbols || []) {
 }
 
 function paperPositionRows(items = lastSnapshot?.symbols || []) {
-  return Object.values(paperAccount.positions || {})
+  const mappedRows = Object.values(paperAccount.positions || {})
     .map((position) => {
       const currentPrice = paperCurrentPrice(position.symbol, items) ?? Number(position.lastPrice || position.avgCostUsdt || 0);
       const quantity = Number(position.quantity || 0);
@@ -4349,7 +4351,13 @@ function paperPositionRows(items = lastSnapshot?.symbols || []) {
         pnlUsdt,
         pnlPct: costUsdt > 0 ? pnlUsdt / costUsdt * 100 : null,
       };
-    })
+    });
+  const equity = Number(paperAccount.cashUsdt || 0) + mappedRows.reduce((sum, row) => sum + row.valueUsdt, 0);
+  return mappedRows
+    .map((row) => ({
+      ...row,
+      weightPct: equity > 0 ? row.valueUsdt / equity * 100 : 0,
+    }))
     .sort((a, b) => String(a.symbol).localeCompare(String(b.symbol)));
 }
 
