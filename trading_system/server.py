@@ -125,6 +125,9 @@ def empty_paper_account_config(initial_cash: float = DEFAULT_PAPER_CASH_USDT) ->
         "settings": {
             "initialCashUsdt": cash,
             "riskPerTradePct": 1.0,
+            "targetEtfWeightPct": 60.0,
+            "targetStockWeightPct": 40.0,
+            "maxSinglePositionPct": 15.0,
             "autoRun": True,
             "commissionPct": 0.0,
             "slippagePct": 0.0,
@@ -205,6 +208,9 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
     settings = {
         "initialCashUsdt": initial_cash,
         "riskPerTradePct": min(5.0, max(0.1, clean_float(raw_settings.get("riskPerTradePct"), 1.0, 0.1))),
+        "targetEtfWeightPct": min(100.0, max(0.0, clean_float(raw_settings.get("targetEtfWeightPct"), 60.0, 0.0))),
+        "targetStockWeightPct": min(100.0, max(0.0, clean_float(raw_settings.get("targetStockWeightPct"), 40.0, 0.0))),
+        "maxSinglePositionPct": min(100.0, max(1.0, clean_float(raw_settings.get("maxSinglePositionPct"), 15.0, 1.0))),
         "autoRun": raw_settings.get("autoRun") is not False,
         "commissionPct": min(1.0, clean_float(raw_settings.get("commissionPct"), 0.0, 0.0)),
         "slippagePct": min(1.0, clean_float(raw_settings.get("slippagePct"), 0.0, 0.0)),
@@ -221,8 +227,12 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
             avg_cost = clean_float(raw_entry.get("avgCostUsdt", raw_entry.get("entryPrice")), 0.0, 0.0)
             if quantity <= 0 or avg_cost <= 0:
                 continue
+            asset_type = str(raw_entry.get("assetType") or raw_entry.get("asset_type") or "etf").strip().lower()
+            if asset_type not in {"etf", "stock", "cash"}:
+                asset_type = "etf"
             entry: dict[str, object] = {
                 "symbol": symbol,
+                "assetType": asset_type,
                 "quantity": quantity,
                 "initialQuantity": clean_float(raw_entry.get("initialQuantity"), quantity, 0.0) or quantity,
                 "entryPrice": clean_float(raw_entry.get("entryPrice"), avg_cost, 0.0) or avg_cost,
@@ -233,6 +243,8 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
                 "lastPrice": clean_float(raw_entry.get("lastPrice"), avg_cost, 0.0) or avg_cost,
                 "partialTaken": bool(raw_entry.get("partialTaken")),
                 "realizedPnlUsdt": clean_float(raw_entry.get("realizedPnlUsdt"), 0.0),
+                "allocationCapPct": clean_float(raw_entry.get("allocationCapPct"), 0.0, 0.0) or None,
+                "singleCapPct": clean_float(raw_entry.get("singleCapPct"), 0.0, 0.0) or None,
             }
             for key in ("openedAt", "openedDate", "openedSignalId", "source", "trigger"):
                 value = raw_entry.get(key)
@@ -703,6 +715,24 @@ def paper_signal_id(snapshot: dict[str, object], symbol: str, action: str, item:
     return f"{date}:{symbol}:{action}:{trigger}"
 
 
+def paper_asset_type_for_item(item: dict[str, object] | None, fallback: str = "etf") -> str:
+    fallback = fallback if fallback in {"etf", "stock", "cash"} else "etf"
+    if not isinstance(item, dict):
+        return fallback
+    role = str(item.get("role") or "").strip().lower()
+    if role == "stock":
+        return "stock"
+    if role == "cash":
+        return "cash"
+    return "etf"
+
+
+def paper_asset_type_for_position(position: dict[str, object], item: dict[str, object] | None = None) -> str:
+    raw_type = str(position.get("assetType") or position.get("asset_type") or "").strip().lower()
+    fallback = raw_type if raw_type in {"etf", "stock", "cash"} else "etf"
+    return paper_asset_type_for_item(item, fallback)
+
+
 def paper_realized_pnl(account: dict[str, object]) -> float:
     trades = account.get("trades")
     if not isinstance(trades, list):
@@ -716,27 +746,49 @@ def paper_account_metrics(account: dict[str, object], snapshot: object | None = 
     cash = clean_float(account.get("cashUsdt"), DEFAULT_PAPER_CASH_USDT, 0.0)
     position_value = 0.0
     unrealized = 0.0
+    etf_value = 0.0
+    stock_value = 0.0
+    largest_symbol = ""
+    largest_value = 0.0
     for symbol, position in positions.items():
         if not isinstance(position, dict):
             continue
         quantity = clean_float(position.get("quantity"), 0.0, 0.0)
         avg_cost = clean_float(position.get("avgCostUsdt"), 0.0, 0.0)
-        current_price = paper_price_for_item(by_symbol.get(str(symbol).upper())) or clean_float(position.get("lastPrice"), avg_cost, 0.0)
-        position_value += quantity * current_price
+        item = by_symbol.get(str(symbol).upper())
+        current_price = paper_price_for_item(item) or clean_float(position.get("lastPrice"), avg_cost, 0.0)
+        value = quantity * current_price
+        asset_type = paper_asset_type_for_position(position, item)
+        if asset_type == "stock":
+            stock_value += value
+        elif asset_type == "etf":
+            etf_value += value
+        if value > largest_value:
+            largest_symbol = str(symbol).upper()
+            largest_value = value
+        position_value += value
         unrealized += (current_price - avg_cost) * quantity
     trades = [trade for trade in account.get("trades", []) if isinstance(trade, dict)]
     closed_trades = [trade for trade in trades if trade.get("side") == "SELL" and trade.get("closesPosition")]
     wins = [trade for trade in closed_trades if clean_float(trade.get("realizedPnlUsdt"), 0.0) > 0]
+    equity = cash + position_value
     return {
         "cashUsdt": cash,
         "positionValueUsdt": position_value,
-        "equityUsdt": cash + position_value,
+        "equityUsdt": equity,
         "unrealizedPnlUsdt": unrealized,
         "realizedPnlUsdt": paper_realized_pnl(account),
         "positionCount": len(positions),
         "tradeCount": len(trades),
         "closedTradeCount": len(closed_trades),
         "winRatePct": len(wins) / len(closed_trades) * 100 if closed_trades else None,
+        "etfValueUsdt": etf_value,
+        "stockValueUsdt": stock_value,
+        "etfWeightPct": etf_value / equity * 100 if equity > 0 else 0.0,
+        "stockWeightPct": stock_value / equity * 100 if equity > 0 else 0.0,
+        "largestPositionSymbol": largest_symbol,
+        "largestPositionValueUsdt": largest_value,
+        "largestPositionWeightPct": largest_value / equity * 100 if equity > 0 else 0.0,
     }
 
 
@@ -893,7 +945,6 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
         if trade:
             run_log.append({"symbol": symbol, "action": "sell", "reason": trade["reason"], "quantity": trade["quantity"], "price": price})
 
-    metrics_before_entries = paper_account_metrics(account, snapshot)
     risk = account.setdefault("risk", {})
     if not isinstance(risk, dict):
         risk = {}
@@ -931,17 +982,48 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             continue
         settings = account.get("settings") if isinstance(account.get("settings"), dict) else {}
         risk_per_trade_pct = clean_float(settings.get("riskPerTradePct"), 1.0, 0.1)
-        risk_budget = clean_float(metrics_before_entries.get("equityUsdt"), DEFAULT_PAPER_CASH_USDT, 0.0) * risk_per_trade_pct / 100
-        position_value = risk_budget / (stop_distance_pct / 100) * entry_multiplier
+        target_etf_pct = clean_float(settings.get("targetEtfWeightPct"), 60.0, 0.0)
+        target_stock_pct = clean_float(settings.get("targetStockWeightPct"), 40.0, 0.0)
+        max_single_pct = clean_float(settings.get("maxSinglePositionPct"), 15.0, 1.0)
+        metrics_now = paper_account_metrics(account, snapshot)
+        equity = clean_float(metrics_now.get("equityUsdt"), DEFAULT_PAPER_CASH_USDT, 0.0)
+        asset_type = paper_asset_type_for_item(item)
+        bucket_target_pct = target_stock_pct if asset_type == "stock" else target_etf_pct
+        bucket_value_key = "stockValueUsdt" if asset_type == "stock" else "etfValueUsdt"
+        bucket_label = "个股" if asset_type == "stock" else "ETF"
+        bucket_current_value = clean_float(metrics_now.get(bucket_value_key), 0.0, 0.0)
+        bucket_remaining_value = max(0.0, equity * bucket_target_pct / 100 - bucket_current_value)
+        single_remaining_value = max(0.0, equity * max_single_pct / 100)
+        if bucket_remaining_value <= 0:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": f"{bucket_label}仓位已达 {bucket_target_pct:g}% 上限"})
+            continue
+        if single_remaining_value <= 0:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": f"单一品种仓位已达 {max_single_pct:g}% 上限"})
+            continue
+        risk_budget = equity * risk_per_trade_pct / 100
+        risk_position_value = risk_budget / (stop_distance_pct / 100) * entry_multiplier
+        position_value = risk_position_value
         cash = clean_float(account.get("cashUsdt"), 0.0, 0.0)
-        position_value = min(position_value, cash)
+        position_value = min(position_value, cash, bucket_remaining_value, single_remaining_value)
         if position_value <= 0:
             run_log.append({"symbol": symbol, "action": "skip", "reason": "模拟现金不足"})
             continue
+        cap_notes: list[str] = []
+        if position_value < risk_position_value - 0.01:
+            if cash <= position_value + 0.01:
+                cap_notes.append("现金上限")
+            if bucket_remaining_value <= position_value + 0.01:
+                cap_notes.append(f"{bucket_label} {bucket_target_pct:g}% 上限")
+            if single_remaining_value <= position_value + 0.01:
+                cap_notes.append(f"单品种 {max_single_pct:g}% 上限")
+        buy_reason = "建议买入信号"
+        if cap_notes:
+            buy_reason += "；仓位按" + "、".join(cap_notes) + "截断"
         quantity = position_value / price
         account["cashUsdt"] = cash - position_value
         positions[symbol] = {
             "symbol": symbol,
+            "assetType": asset_type,
             "quantity": quantity,
             "initialQuantity": quantity,
             "entryPrice": price,
@@ -959,6 +1041,8 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             "trigger": str(short_term.get("trigger") or ""),
             "riskReward": clean_float(short_term.get("risk_reward"), 0.0, 0.0),
             "stopDistancePct": stop_distance_pct,
+            "allocationCapPct": bucket_target_pct,
+            "singleCapPct": max_single_pct,
         }
         append_paper_trade(
             account,
@@ -966,12 +1050,12 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             side="BUY",
             quantity=quantity,
             price=price,
-            reason="建议买入信号",
+            reason=buy_reason,
             signal_id=signal_id,
             executed_at=executed_at,
         )
         processed.append(signal_id)
-        run_log.append({"symbol": symbol, "action": "buy", "reason": "建议买入信号", "quantity": quantity, "price": price})
+        run_log.append({"symbol": symbol, "action": "buy", "reason": buy_reason, "quantity": quantity, "price": price})
 
     del processed[:-MAX_PAPER_PROCESSED_SIGNALS]
     append_paper_equity_point(account, snapshot, executed_at)
