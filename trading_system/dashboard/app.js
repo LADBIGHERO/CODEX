@@ -7,6 +7,7 @@ const groupOrder = [
 
 const MAX_ASSET_POOL_GROUPS = 10;
 const MAX_ASSET_POOL_GROUP_SYMBOLS = 30;
+const PAPER_ENTRY_POSITION_OPTIONS = [2, 3, 5, 8, 10];
 let assetPoolGroups = [
   { id: "core_strategy", name: "核心策略资产", symbols: ["QQQ", "SPY", "GLD", "SGOV"] },
   { id: "stock_watchlist", name: "股票观察池", symbols: ["NVDA", "MSFT", "META", "JPM", "XOM", "LLY", "CAT", "GE", "WMT", "V"] },
@@ -272,6 +273,7 @@ let paperAccount = {
   settings: {
     initialCashUsdt: 100000,
     riskPerTradePct: 1,
+    entryPositionPct: 5,
     targetEtfWeightPct: 60,
     targetStockWeightPct: 40,
     maxSinglePositionPct: 15,
@@ -288,6 +290,7 @@ let paperAccountCapabilities = {
   read: false,
   reset: false,
   run: false,
+  saveSettings: false,
 };
 let paperAccountLoading = false;
 let paperAccountError = "";
@@ -3368,6 +3371,7 @@ function renderPaperPage(items, snapshot) {
 
 function PaperMetricsPanel(stats) {
   const initialCash = Number(paperAccount.settings?.initialCashUsdt || 100000);
+  const entryPositionPct = Number(paperAccount.settings?.entryPositionPct ?? 5);
   const etfTargetPct = Number(paperAccount.settings?.targetEtfWeightPct ?? 60);
   const stockTargetPct = Number(paperAccount.settings?.targetStockWeightPct ?? 40);
   const singleCapPct = Number(paperAccount.settings?.maxSinglePositionPct ?? 15);
@@ -3383,10 +3387,18 @@ function PaperMetricsPanel(stats) {
         <h3>账户状态</h3>
         <span class="data-source-pill">模拟</span>
       </div>
+      <label class="paper-setting-control">
+        <span>单次基础开仓</span>
+        <select data-paper-entry-position ${paperAccountLoading || !paperAccountCapabilities.saveSettings ? "disabled" : ""}>
+          ${PAPER_ENTRY_POSITION_OPTIONS.map((value) => `<option value="${value}" ${Number(value) === Number(entryPositionPct) ? "selected" : ""}>${value}%</option>`).join("")}
+        </select>
+        <small>默认 5%；15% 是单品种累计上限，不是单次买入额。</small>
+      </label>
       <dl class="paper-metric-list">
         <div><dt>初始资金</dt><dd>${formatUsdt(initialCash)}</dd></div>
         <div><dt>当前净值</dt><dd>${formatUsdt(stats.equityUsdt)}</dd></div>
         <div><dt>持仓市值</dt><dd>${formatUsdt(stats.positionValueUsdt)}</dd></div>
+        <div><dt>单次开仓</dt><dd>${pct(entryPositionPct)}</dd></div>
         <div><dt>ETF 仓位</dt><dd>${pct(stats.etfWeightPct)} / ${pct(etfTargetPct)}</dd></div>
         <div><dt>个股仓位</dt><dd>${pct(stats.stockWeightPct)} / ${pct(stockTargetPct)}</dd></div>
         <div><dt>单品种上限</dt><dd>${stats.largestPositionSymbol ? `${escapeHtml(stats.largestPositionSymbol)} ${pct(stats.largestPositionWeightPct)} / ${pct(singleCapPct)}` : `上限 ${pct(singleCapPct)}`}</dd></div>
@@ -4250,6 +4262,7 @@ function normalizePaperAccount(account) {
     settings: {
       initialCashUsdt: Number(account.settings?.initialCashUsdt || 100000),
       riskPerTradePct: Number(account.settings?.riskPerTradePct || 1),
+      entryPositionPct: Number(account.settings?.entryPositionPct ?? 5),
       targetEtfWeightPct: Number(account.settings?.targetEtfWeightPct ?? 60),
       targetStockWeightPct: Number(account.settings?.targetStockWeightPct ?? 40),
       maxSinglePositionPct: Number(account.settings?.maxSinglePositionPct ?? 15),
@@ -4371,7 +4384,7 @@ async function loadPaperAccountQuietly() {
     paperAccountError = "";
   } catch (error) {
     paperAccountError = error.message || "模拟账户读取失败";
-    paperAccountCapabilities = { read: false, reset: false, run: false };
+    paperAccountCapabilities = { read: false, reset: false, run: false, saveSettings: false };
   }
 }
 
@@ -4387,7 +4400,7 @@ async function runPaperAccountForSnapshot(snapshot, options = {}) {
     const payload = await response.json();
     if (!response.ok || !payload.ok) throw new Error(payload.error || "模拟执行失败");
     paperAccount = normalizePaperAccount(payload.account);
-    paperAccountCapabilities = { ...paperAccountCapabilities, run: true, reset: true, read: true };
+    paperAccountCapabilities = { ...paperAccountCapabilities, run: true, reset: true, read: true, saveSettings: true };
     paperAccountError = "";
     return true;
   } catch (error) {
@@ -4416,6 +4429,30 @@ async function resetPaperAccount() {
   } catch (error) {
     paperAccountError = error.message || "模拟账户重置失败";
     setNotice(paperAccountError);
+  } finally {
+    paperAccountLoading = false;
+  }
+}
+
+async function savePaperAccountSettings(settingsPatch) {
+  paperAccountLoading = true;
+  try {
+    const response = await fetch("/api/paper-account/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings: settingsPatch }),
+    });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) throw new Error(payload.error || "模拟账户设置保存失败");
+    paperAccount = normalizePaperAccount(payload.account);
+    paperAccountCapabilities = { ...paperAccountCapabilities, ...(payload.capabilities || {}) };
+    paperAccountError = "";
+    if (lastSnapshot) render(lastSnapshot);
+    setNotice("模拟账户开仓比例已更新。", "neutral");
+  } catch (error) {
+    paperAccountError = error.message || "模拟账户设置保存失败";
+    setNotice(paperAccountError);
+    if (lastSnapshot) render(lastSnapshot);
   } finally {
     paperAccountLoading = false;
   }
@@ -6135,6 +6172,12 @@ function bindPaperEvents() {
     if (!window.confirm("确认重置模拟账户？这会清空模拟持仓、净值曲线和交易记录。")) return;
     await resetPaperAccount();
   });
+
+  document.querySelector("[data-paper-entry-position]")?.addEventListener("change", async (event) => {
+    const value = Number(event.target.value);
+    if (!Number.isFinite(value) || value <= 0) return;
+    await savePaperAccountSettings({ entryPositionPct: value });
+  });
 }
 
 function bindSettingsEvents() {
@@ -6302,7 +6345,7 @@ async function refresh(options = {}) {
       paperAccountError = paperAccountResult.status === "fulfilled"
         ? (paperAccountResult.value.error || "模拟账户读取失败")
         : paperAccountResult.reason.message;
-      paperAccountCapabilities = { read: false, reset: false, run: false };
+      paperAccountCapabilities = { read: false, reset: false, run: false, saveSettings: false };
     }
 
     await loadBinanceAccountQuietly();

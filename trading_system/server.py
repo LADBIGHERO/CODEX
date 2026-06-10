@@ -163,6 +163,7 @@ def empty_paper_account_config(initial_cash: float = DEFAULT_PAPER_CASH_USDT) ->
         "settings": {
             "initialCashUsdt": cash,
             "riskPerTradePct": 1.0,
+            "entryPositionPct": 5.0,
             "targetEtfWeightPct": 60.0,
             "targetStockWeightPct": 40.0,
             "maxSinglePositionPct": 15.0,
@@ -299,6 +300,7 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
     settings = {
         "initialCashUsdt": initial_cash,
         "riskPerTradePct": min(5.0, max(0.1, clean_float(raw_settings.get("riskPerTradePct"), 1.0, 0.1))),
+        "entryPositionPct": min(10.0, max(1.0, clean_float(raw_settings.get("entryPositionPct"), 5.0, 1.0))),
         "targetEtfWeightPct": min(100.0, max(0.0, clean_float(raw_settings.get("targetEtfWeightPct"), 60.0, 0.0))),
         "targetStockWeightPct": min(100.0, max(0.0, clean_float(raw_settings.get("targetStockWeightPct"), 40.0, 0.0))),
         "maxSinglePositionPct": min(100.0, max(1.0, clean_float(raw_settings.get("maxSinglePositionPct"), 15.0, 1.0))),
@@ -334,6 +336,7 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
                 "lastPrice": clean_float(raw_entry.get("lastPrice"), avg_cost, 0.0) or avg_cost,
                 "partialTaken": bool(raw_entry.get("partialTaken")),
                 "realizedPnlUsdt": clean_float(raw_entry.get("realizedPnlUsdt"), 0.0),
+                "entryPositionPct": clean_float(raw_entry.get("entryPositionPct"), 0.0, 0.0) or None,
                 "allocationCapPct": clean_float(raw_entry.get("allocationCapPct"), 0.0, 0.0) or None,
                 "singleCapPct": clean_float(raw_entry.get("singleCapPct"), 0.0, 0.0) or None,
             }
@@ -1073,6 +1076,7 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             continue
         settings = account.get("settings") if isinstance(account.get("settings"), dict) else {}
         risk_per_trade_pct = clean_float(settings.get("riskPerTradePct"), 1.0, 0.1)
+        entry_position_pct = clean_float(settings.get("entryPositionPct"), 5.0, 1.0)
         target_etf_pct = clean_float(settings.get("targetEtfWeightPct"), 60.0, 0.0)
         target_stock_pct = clean_float(settings.get("targetStockWeightPct"), 40.0, 0.0)
         max_single_pct = clean_float(settings.get("maxSinglePositionPct"), 15.0, 1.0)
@@ -1093,21 +1097,26 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             continue
         risk_budget = equity * risk_per_trade_pct / 100
         risk_position_value = risk_budget / (stop_distance_pct / 100) * entry_multiplier
+        entry_target_value = equity * entry_position_pct / 100 * entry_multiplier
         position_value = risk_position_value
         cash = clean_float(account.get("cashUsdt"), 0.0, 0.0)
-        position_value = min(position_value, cash, bucket_remaining_value, single_remaining_value)
+        position_value = min(position_value, entry_target_value, cash, bucket_remaining_value, single_remaining_value)
         if position_value <= 0:
             run_log.append({"symbol": symbol, "action": "skip", "reason": "模拟现金不足"})
             continue
         cap_notes: list[str] = []
         if position_value < risk_position_value - 0.01:
+            if entry_target_value <= position_value + 0.01:
+                cap_notes.append(f"单次开仓 {entry_position_pct:g}%")
             if cash <= position_value + 0.01:
                 cap_notes.append("现金上限")
             if bucket_remaining_value <= position_value + 0.01:
                 cap_notes.append(f"{bucket_label} {bucket_target_pct:g}% 上限")
             if single_remaining_value <= position_value + 0.01:
                 cap_notes.append(f"单品种 {max_single_pct:g}% 上限")
-        buy_reason = "建议买入信号"
+        buy_reason = f"建议买入信号；基础开仓 {entry_position_pct:g}%"
+        if entry_multiplier < 1:
+            buy_reason += "；连续亏损降仓 50%"
         if cap_notes:
             buy_reason += "；仓位按" + "、".join(cap_notes) + "截断"
         quantity = position_value / price
@@ -1132,6 +1141,7 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             "trigger": str(short_term.get("trigger") or ""),
             "riskReward": clean_float(short_term.get("risk_reward"), 0.0, 0.0),
             "stopDistancePct": stop_distance_pct,
+            "entryPositionPct": entry_position_pct,
             "allocationCapPct": bucket_target_pct,
             "singleCapPct": max_single_pct,
         }
@@ -1380,6 +1390,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/paper-account/run":
             self.handle_paper_account_run()
             return
+        if parsed.path == "/api/paper-account/settings":
+            self.handle_paper_account_settings()
+            return
         if parsed.path == "/api/ui-cache":
             self.handle_ui_cache_post()
             return
@@ -1546,6 +1559,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         "read": True,
                         "reset": True,
                         "run": True,
+                        "saveSettings": True,
                     },
                     "server": self.app.status_payload(),
                 }
@@ -1573,6 +1587,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 raise ValueError("Missing snapshot")
             account = self.app.run_paper_account(snapshot)
             self.send_json({"ok": True, "account": account, "server": self.app.status_payload()})
+        except json.JSONDecodeError as exc:
+            self.send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc), "server": self.app.status_payload()}, HTTPStatus.BAD_GATEWAY)
+
+    def handle_paper_account_settings(self) -> None:
+        try:
+            payload = self.read_json_body()
+            settings_payload = payload.get("settings") if isinstance(payload.get("settings"), dict) else payload
+            if not isinstance(settings_payload, dict):
+                raise ValueError("Missing settings payload")
+            account = self.app.update_paper_account_settings(settings_payload)
+            account["metrics"] = paper_account_metrics(account)
+            self.send_json(
+                {
+                    "ok": True,
+                    "account": account,
+                    "capabilities": {
+                        "read": True,
+                        "reset": True,
+                        "run": True,
+                        "saveSettings": True,
+                    },
+                    "server": self.app.status_payload(),
+                }
+            )
         except json.JSONDecodeError as exc:
             self.send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
@@ -1807,6 +1847,15 @@ class DashboardServer(ThreadingHTTPServer):
 
     def reset_paper_account_config(self, initial_cash: float = DEFAULT_PAPER_CASH_USDT) -> dict[str, object]:
         return self.save_paper_account_config(empty_paper_account_config(initial_cash))
+
+    def update_paper_account_settings(self, settings_patch: dict[str, object]) -> dict[str, object]:
+        account = self.load_paper_account_config()
+        settings = account.get("settings") if isinstance(account.get("settings"), dict) else {}
+        settings = dict(settings)
+        if "entryPositionPct" in settings_patch:
+            settings["entryPositionPct"] = settings_patch.get("entryPositionPct")
+        account["settings"] = settings
+        return self.save_paper_account_config(account)
 
     def run_paper_account(self, snapshot: dict[str, object]) -> dict[str, object]:
         account = self.load_paper_account_config()
