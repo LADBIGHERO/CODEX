@@ -212,12 +212,14 @@ class StrategyBacktester:
         initial_capital: float,
         output_dir: Path,
         refresh_history: bool,
+        stock_sleeve_normal_pct: float = STOCK_SLEEVE_NORMAL,
     ) -> None:
         self.start_date = start_date
         self.end_date = end_date
         self.initial_capital = initial_capital
         self.output_dir = output_dir
         self.refresh_history = refresh_history
+        self.stock_sleeve_normal_pct = stock_sleeve_normal_pct
         self.symbols = sorted(set(ETF_SYMBOLS + STOCK_SYMBOLS + ["SPY", "QQQ"]))
         self.data: dict[str, pd.DataFrame] = {}
         self.dates: list[dt.date] = []
@@ -371,14 +373,13 @@ class StrategyBacktester:
             return "caution"
         return "defensive"
 
-    @staticmethod
-    def regime_rules(regime: str) -> dict[str, float]:
+    def regime_rules(self, regime: str) -> dict[str, float]:
         if regime == "normal":
             return {
                 "new_mult": 1.0,
                 "add1_mult": 1.0,
                 "add2_mult": 1.0,
-                "stock_limit": STOCK_SLEEVE_NORMAL,
+                "stock_limit": self.stock_sleeve_normal_pct,
                 "open_risk_limit": NORMAL_OPEN_RISK_LIMIT,
                 "initial_risk_limit": NORMAL_INITIAL_RISK_LIMIT,
                 "position_risk_limit": NORMAL_POSITION_RISK_LIMIT,
@@ -1205,14 +1206,25 @@ class StrategyBacktester:
             warnings.append("No point-in-time QQQ top-10 holdings were found; QQQ overlap limits were reported but not enforced.")
         return {
             "ok": True,
-            "scenario": "candidate-v2.1-hard-rules",
+            "scenario": self.scenario_name(),
             "summary": summary,
             "trades": self.trade_rows,
             "fills": [fill.__dict__ for fill in self.fills],
             "equity_curve": self.equity_rows,
             "quality_warnings": warnings,
+            "parameters": {
+                "stock_sleeve_normal_pct": self.stock_sleeve_normal_pct * 100,
+                "stock_sleeve_caution_pct": STOCK_SLEEVE_CAUTION * 100,
+                "stock_sleeve_defensive_pct": STOCK_SLEEVE_DEFENSIVE * 100,
+            },
             "rules": strategy_rules(),
         }
+
+    def scenario_name(self) -> str:
+        stock_cap = round(self.stock_sleeve_normal_pct * 100)
+        if stock_cap == round(STOCK_SLEEVE_NORMAL * 100):
+            return "candidate-v2.1-hard-rules"
+        return f"candidate-v2.1-stock-sleeve-normal-{stock_cap}"
 
 
 def build_summary(initial_capital: float, trades: list[dict[str, Any]], equity_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1620,6 +1632,12 @@ def main() -> int:
     parser.add_argument("--end-date", default="2024-12-31")
     parser.add_argument("--output-dir", default=str(ROOT / "reports" / "strategy_backtest"))
     parser.add_argument("--refresh-history", action="store_true")
+    parser.add_argument(
+        "--stock-sleeve-normal-pct",
+        type=float,
+        default=STOCK_SLEEVE_NORMAL * 100,
+        help="Normal-regime stock sleeve cap as percent of account equity.",
+    )
     args = parser.parse_args()
 
     start_date = parse_date(args.start_date)
@@ -1634,6 +1652,7 @@ def main() -> int:
         initial_capital=args.initial_capital,
         output_dir=output_dir,
         refresh_history=args.refresh_history,
+        stock_sleeve_normal_pct=args.stock_sleeve_normal_pct / 100,
     )
     payload = backtester.run()
     paths = write_outputs(payload, output_dir)
