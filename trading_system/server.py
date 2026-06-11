@@ -75,19 +75,37 @@ EDITABLE_CONFIG_PATHS = {
     "price_behavior.bearish_volume_multiplier",
     "execution.buy_limit_buffer_pct",
     "execution.sell_limit_buffer_pct",
+    "execution.stop_execution_mode",
+    "execution.slippage_pct",
     "short_term.min_avg_dollar_volume_20",
     "short_term.sma20_flat_slope_pct_3d",
     "short_term.breakout_window_days",
     "short_term.pullback_lookback_days",
     "short_term.near_support_pct",
-    "short_term.breakout_buffer_pct",
+    "short_term.atr_period",
+    "short_term.min_breakout_buffer_pct",
+    "short_term.min_stop_buffer_pct",
+    "short_term.min_support_confirm_buffer_pct",
+    "short_term.atr_breakout_multiplier",
+    "short_term.atr_stop_multiplier",
+    "short_term.atr_support_multiplier",
     "short_term.volume_multiplier",
-    "short_term.stop_buffer_pct",
     "short_term.max_stop_distance_pct",
+    "short_term.min_target1_r",
+    "short_term.ideal_target1_r",
     "short_term.min_risk_reward",
     "short_term.second_target_r",
     "short_term.risk_per_trade_pct",
+    "short_term.base_position_pct",
+    "short_term.max_single_position_pct",
+    "short_term.min_position_pct",
+    "short_term.max_open_risk_pct",
     "short_term.weak_momentum_5d_pct",
+    "short_term.time_stop_mfe_days",
+    "short_term.time_stop_mfe_r",
+    "short_term.time_stop_tp1_days",
+    "short_term.max_holding_days",
+    "short_term.event_risk_default",
 }
 
 DEFAULT_ASSET_POOL_GROUPS = [
@@ -167,9 +185,11 @@ def empty_paper_account_config(initial_cash: float = DEFAULT_PAPER_CASH_USDT) ->
             "targetEtfWeightPct": 60.0,
             "targetStockWeightPct": 40.0,
             "maxSinglePositionPct": 15.0,
+            "maxOpenRiskPct": 3.0,
+            "stopExecutionMode": "intraday_stop",
             "autoRun": True,
             "commissionPct": 0.0,
-            "slippagePct": 0.0,
+            "slippagePct": 0.1,
         },
         "cashUsdt": cash,
         "positions": {},
@@ -297,6 +317,9 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
 
     raw_settings = payload.get("settings") if isinstance(payload.get("settings"), dict) else {}
     initial_cash = clean_float(raw_settings.get("initialCashUsdt"), DEFAULT_PAPER_CASH_USDT, 1.0)
+    slippage_pct = min(1.0, clean_float(raw_settings.get("slippagePct"), 0.1, 0.0))
+    if slippage_pct == 0:
+        slippage_pct = 0.1
     settings = {
         "initialCashUsdt": initial_cash,
         "riskPerTradePct": min(5.0, max(0.1, clean_float(raw_settings.get("riskPerTradePct"), 1.0, 0.1))),
@@ -304,9 +327,13 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
         "targetEtfWeightPct": min(100.0, max(0.0, clean_float(raw_settings.get("targetEtfWeightPct"), 60.0, 0.0))),
         "targetStockWeightPct": min(100.0, max(0.0, clean_float(raw_settings.get("targetStockWeightPct"), 40.0, 0.0))),
         "maxSinglePositionPct": min(100.0, max(1.0, clean_float(raw_settings.get("maxSinglePositionPct"), 15.0, 1.0))),
+        "maxOpenRiskPct": min(20.0, max(0.1, clean_float(raw_settings.get("maxOpenRiskPct"), 3.0, 0.1))),
+        "stopExecutionMode": str(raw_settings.get("stopExecutionMode") or "intraday_stop")
+        if str(raw_settings.get("stopExecutionMode") or "intraday_stop") in {"intraday_stop", "close_confirm_stop"}
+        else "intraday_stop",
         "autoRun": raw_settings.get("autoRun") is not False,
         "commissionPct": min(1.0, clean_float(raw_settings.get("commissionPct"), 0.0, 0.0)),
-        "slippagePct": min(1.0, clean_float(raw_settings.get("slippagePct"), 0.0, 0.0)),
+        "slippagePct": slippage_pct,
     }
 
     positions: dict[str, dict[str, object]] = {}
@@ -339,8 +366,15 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
                 "entryPositionPct": clean_float(raw_entry.get("entryPositionPct"), 0.0, 0.0) or None,
                 "allocationCapPct": clean_float(raw_entry.get("allocationCapPct"), 0.0, 0.0) or None,
                 "singleCapPct": clean_float(raw_entry.get("singleCapPct"), 0.0, 0.0) or None,
+                "positionPct": clean_float(raw_entry.get("positionPct"), 0.0, 0.0) or None,
+                "riskBudgetPct": clean_float(raw_entry.get("riskBudgetPct"), 0.0, 0.0) or None,
+                "initialRiskPerShare": clean_float(raw_entry.get("initialRiskPerShare"), 0.0, 0.0) or None,
+                "target1R": clean_float(raw_entry.get("target1R"), 0.0, 0.0) or None,
+                "target2R": clean_float(raw_entry.get("target2R"), 0.0, 0.0) or None,
+                "maxFavorableR": clean_float(raw_entry.get("maxFavorableR"), 0.0),
+                "maxAdverseR": clean_float(raw_entry.get("maxAdverseR"), 0.0),
             }
-            for key in ("openedAt", "openedDate", "openedSignalId", "source", "trigger"):
+            for key in ("openedAt", "openedDate", "openedSignalId", "source", "trigger", "entryType"):
                 value = raw_entry.get(key)
                 if isinstance(value, str) and value.strip():
                     entry[key] = value.strip()[:120]
@@ -371,6 +405,25 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
                     "signalId": str(raw_trade.get("signalId") or "")[:200],
                     "executedAt": str(raw_trade.get("executedAt") or "")[:80],
                     "closesPosition": bool(raw_trade.get("closesPosition")),
+                    "assetType": str(raw_trade.get("assetType") or "")[:24],
+                    "entryType": str(raw_trade.get("entryType") or "")[:40],
+                    "stopPrice": clean_float(raw_trade.get("stopPrice"), 0.0, 0.0) or None,
+                    "stopDistancePct": clean_float(raw_trade.get("stopDistancePct"), 0.0, 0.0) or None,
+                    "positionPct": clean_float(raw_trade.get("positionPct"), 0.0, 0.0) or None,
+                    "riskBudgetPct": clean_float(raw_trade.get("riskBudgetPct"), 0.0, 0.0) or None,
+                    "target1Price": clean_float(raw_trade.get("target1Price"), 0.0, 0.0) or None,
+                    "target2Price": clean_float(raw_trade.get("target2Price"), 0.0, 0.0) or None,
+                    "target1R": clean_float(raw_trade.get("target1R"), 0.0, 0.0) or None,
+                    "target2R": clean_float(raw_trade.get("target2R"), 0.0, 0.0) or None,
+                    "realizedR": clean_float(raw_trade.get("realizedR"), 0.0),
+                    "realizedPct": clean_float(raw_trade.get("realizedPct"), 0.0),
+                    "holdingDays": clean_float(raw_trade.get("holdingDays"), 0.0, 0.0) or None,
+                    "maxFavorableR": clean_float(raw_trade.get("maxFavorableR"), 0.0),
+                    "maxAdverseR": clean_float(raw_trade.get("maxAdverseR"), 0.0),
+                    "eventRiskStatus": str(raw_trade.get("eventRiskStatus") or "")[:40],
+                    "volumeConfirmed": bool(raw_trade.get("volumeConfirmed")),
+                    "planFollowed": raw_trade.get("planFollowed") is not False,
+                    "slippagePct": clean_float(raw_trade.get("slippagePct"), 0.0, 0.0),
                 }
             )
 
@@ -834,12 +887,24 @@ def paper_realized_pnl(account: dict[str, object]) -> float:
     return sum(clean_float(trade.get("realizedPnlUsdt"), 0.0) for trade in trades if isinstance(trade, dict))
 
 
+def paper_holding_days(position: dict[str, object], executed_at: str) -> int | None:
+    raw_opened = str(position.get("openedDate") or position.get("openedAt") or "")[:10]
+    raw_exit = str(executed_at or "")[:10]
+    if not raw_opened or not raw_exit:
+        return None
+    try:
+        return max(0, (dt.date.fromisoformat(raw_exit) - dt.date.fromisoformat(raw_opened)).days)
+    except ValueError:
+        return None
+
+
 def paper_account_metrics(account: dict[str, object], snapshot: object | None = None) -> dict[str, object]:
     by_symbol = paper_snapshot_items(snapshot)
     positions = account.get("positions") if isinstance(account.get("positions"), dict) else {}
     cash = clean_float(account.get("cashUsdt"), DEFAULT_PAPER_CASH_USDT, 0.0)
     position_value = 0.0
     unrealized = 0.0
+    open_risk = 0.0
     etf_value = 0.0
     stock_value = 0.0
     largest_symbol = ""
@@ -862,6 +927,9 @@ def paper_account_metrics(account: dict[str, object], snapshot: object | None = 
             largest_value = value
         position_value += value
         unrealized += (current_price - avg_cost) * quantity
+        stop_price = clean_float(position.get("stopPrice"), 0.0, 0.0)
+        if stop_price > 0 and current_price > stop_price:
+            open_risk += (current_price - stop_price) * quantity
     trades = [trade for trade in account.get("trades", []) if isinstance(trade, dict)]
     closed_trades = [trade for trade in trades if trade.get("side") == "SELL" and trade.get("closesPosition")]
     wins = [trade for trade in closed_trades if clean_float(trade.get("realizedPnlUsdt"), 0.0) > 0]
@@ -871,6 +939,8 @@ def paper_account_metrics(account: dict[str, object], snapshot: object | None = 
         "positionValueUsdt": position_value,
         "equityUsdt": equity,
         "unrealizedPnlUsdt": unrealized,
+        "openRiskUsdt": open_risk,
+        "openRiskPct": open_risk / equity * 100 if equity > 0 else 0.0,
         "realizedPnlUsdt": paper_realized_pnl(account),
         "positionCount": len(positions),
         "tradeCount": len(trades),
@@ -898,6 +968,7 @@ def append_paper_trade(
     executed_at: str,
     realized_pnl: float = 0.0,
     closes_position: bool = False,
+    extra: dict[str, object] | None = None,
 ) -> dict[str, object]:
     trades = account.setdefault("trades", [])
     if not isinstance(trades, list):
@@ -916,6 +987,8 @@ def append_paper_trade(
         "executedAt": executed_at,
         "closesPosition": closes_position,
     }
+    if extra:
+        trade.update(extra)
     trades.append(trade)
     del trades[:-MAX_PAPER_TRADES]
     return trade
@@ -929,6 +1002,7 @@ def close_paper_position(
     reason: str,
     signal_id: str,
     executed_at: str,
+    extra: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
     symbol = str(position.get("symbol") or "").upper()
     current_quantity = clean_float(position.get("quantity"), 0.0, 0.0)
@@ -941,6 +1015,30 @@ def close_paper_position(
     closes_position = remaining <= max(current_quantity * 0.000001, 0.00000001)
     account["cashUsdt"] = clean_float(account.get("cashUsdt"), 0.0, 0.0) + sell_quantity * price
     accrued = clean_float(position.get("realizedPnlUsdt"), 0.0) + realized
+    initial_risk = clean_float(position.get("initialRiskPerShare"), 0.0, 0.0)
+    realized_r = (price - avg_cost) / initial_risk if initial_risk > 0 else None
+    realized_pct = (price / avg_cost - 1) * 100 if avg_cost > 0 else None
+    trade_extra = {
+        "assetType": str(position.get("assetType") or ""),
+        "entryType": str(position.get("entryType") or position.get("trigger") or ""),
+        "stopPrice": clean_float(position.get("stopPrice"), 0.0, 0.0) or None,
+        "stopDistancePct": clean_float(position.get("stopDistancePct"), 0.0, 0.0) or None,
+        "positionPct": clean_float(position.get("positionPct"), 0.0, 0.0) or None,
+        "riskBudgetPct": clean_float(position.get("riskBudgetPct"), 0.0, 0.0) or None,
+        "target1Price": clean_float(position.get("targetPrice"), 0.0, 0.0) or None,
+        "target2Price": clean_float(position.get("target2Price"), 0.0, 0.0) or None,
+        "target1R": clean_float(position.get("target1R"), 0.0, 0.0) or None,
+        "target2R": clean_float(position.get("target2R"), 0.0, 0.0) or None,
+        "realizedR": realized_r,
+        "realizedPct": realized_pct,
+        "holdingDays": paper_holding_days(position, executed_at),
+        "maxFavorableR": clean_float(position.get("maxFavorableR"), 0.0),
+        "maxAdverseR": clean_float(position.get("maxAdverseR"), 0.0),
+        "slippagePct": clean_float(position.get("slippagePct"), 0.0, 0.0),
+        "planFollowed": True,
+    }
+    if extra:
+        trade_extra.update(extra)
     trade = append_paper_trade(
         account,
         symbol=symbol,
@@ -952,6 +1050,7 @@ def close_paper_position(
         executed_at=executed_at,
         realized_pnl=accrued if closes_position else realized,
         closes_position=closes_position,
+        extra=trade_extra,
     )
     positions = account.get("positions") if isinstance(account.get("positions"), dict) else {}
     if closes_position:
@@ -1004,6 +1103,12 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
     if not isinstance(positions, dict):
         positions = {}
         account["positions"] = positions
+    settings = account.get("settings") if isinstance(account.get("settings"), dict) else {}
+    slippage_pct = clean_float(settings.get("slippagePct"), 0.1, 0.0)
+    stop_execution_mode = str(settings.get("stopExecutionMode") or "intraday_stop")
+    if stop_execution_mode not in {"intraday_stop", "close_confirm_stop"}:
+        stop_execution_mode = "intraday_stop"
+    max_open_risk_pct = clean_float(settings.get("maxOpenRiskPct"), 3.0, 0.1)
 
     for symbol, position in list(positions.items()):
         if not isinstance(position, dict):
@@ -1015,27 +1120,64 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             continue
         position["lastPrice"] = price
         short_term = item.get("short_term") if isinstance(item, dict) and isinstance(item.get("short_term"), dict) else {}
+        daily_open = clean_float(short_term.get("daily_open"), price, 0.0)
+        daily_high = clean_float(short_term.get("daily_high"), price, 0.0)
+        daily_low = clean_float(short_term.get("daily_low"), price, 0.0)
         stop_price = clean_float(position.get("stopPrice"), 0.0, 0.0)
         target_price = clean_float(position.get("targetPrice"), 0.0, 0.0)
         target2_price = clean_float(position.get("target2Price"), 0.0, 0.0)
         quantity = clean_float(position.get("quantity"), 0.0, 0.0)
         signal_id = paper_signal_id(snapshot, str(symbol).upper(), "sell", item or {"symbol": symbol})
+        entry_price = clean_float(position.get("entryPrice"), clean_float(position.get("avgCostUsdt"), 0.0, 0.0), 0.0)
+        initial_risk = clean_float(position.get("initialRiskPerShare"), 0.0, 0.0)
+        if initial_risk > 0 and entry_price > 0:
+            favorable_r = ((daily_high or price) - entry_price) / initial_risk
+            adverse_r = ((daily_low or price) - entry_price) / initial_risk
+            position["maxFavorableR"] = max(clean_float(position.get("maxFavorableR"), favorable_r), favorable_r)
+            position["maxAdverseR"] = min(clean_float(position.get("maxAdverseR"), adverse_r), adverse_r)
         trade = None
-        if stop_price > 0 and price <= stop_price:
+        intraday_stop_hit = stop_price > 0 and (price <= stop_price or daily_low <= stop_price)
+        close_stop_hit = stop_price > 0 and price <= stop_price
+        if intraday_stop_hit if stop_execution_mode == "intraday_stop" else close_stop_hit:
+            slipped_stop = stop_price * (1 - slippage_pct / 100)
+            exit_price = price if stop_execution_mode == "close_confirm_stop" else min(price, slipped_stop)
+            if stop_execution_mode == "intraday_stop" and daily_open > 0 and daily_open < stop_price:
+                exit_price = min(exit_price, daily_open)
+            trade = close_paper_position(
+                account,
+                position,
+                quantity,
+                exit_price,
+                "触发短线硬止损",
+                signal_id,
+                executed_at,
+                {"exitReason": "hard_stop", "slippagePct": slippage_pct},
+            )
+        if trade is None and stop_price > 0 and price <= stop_price:
             trade = close_paper_position(account, position, quantity, price, "触发短线止损", signal_id, executed_at)
-        elif target2_price > 0 and price >= target2_price:
+        elif trade is None and target2_price > 0 and price >= target2_price:
             trade = close_paper_position(account, position, quantity, price, "到达第二止盈", signal_id, executed_at)
-        elif target_price > 0 and price >= target_price and not position.get("partialTaken"):
+        elif trade is None and target_price > 0 and price >= target_price and not position.get("partialTaken"):
             trade = close_paper_position(account, position, quantity * 0.5, price, "到达第一止盈，卖出一半", signal_id, executed_at)
             if str(symbol).upper() in positions:
                 position["partialTaken"] = True
                 position["stopPrice"] = max(stop_price, clean_float(position.get("avgCostUsdt"), 0.0, 0.0))
-        elif short_term.get("sell_signal"):
+        elif trade is None and short_term.get("sell_signal"):
             sell_reasons = short_term.get("sell_reasons")
             if not isinstance(sell_reasons, list):
                 sell_reasons = []
             reason = "、".join(str(item) for item in sell_reasons[:3]) or "短线卖出信号"
             trade = close_paper_position(account, position, quantity, price, reason, signal_id, executed_at)
+        if not trade:
+            holding_days = paper_holding_days(position, executed_at)
+            max_favorable_r = clean_float(position.get("maxFavorableR"), 0.0)
+            target1_taken = bool(position.get("partialTaken"))
+            if holding_days is not None and holding_days >= 14 and not target1_taken:
+                trade = close_paper_position(account, position, quantity, price, "时间止损：持仓超过 14 天未到 TP2", signal_id, executed_at, {"exitReason": "time_stop"})
+            elif holding_days is not None and holding_days >= 10 and not target1_taken:
+                trade = close_paper_position(account, position, quantity, price, "时间止损：10 天未到 TP1", signal_id, executed_at, {"exitReason": "time_stop"})
+            elif holding_days is not None and holding_days >= 5 and max_favorable_r < 0.8:
+                run_log.append({"symbol": symbol, "action": "watch", "reason": "时间止损预警：5 天内最高浮盈未到 0.8R"})
         if trade:
             run_log.append({"symbol": symbol, "action": "sell", "reason": trade["reason"], "quantity": trade["quantity"], "price": price})
 
@@ -1098,11 +1240,18 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
         risk_budget = equity * risk_per_trade_pct / 100
         risk_position_value = risk_budget / (stop_distance_pct / 100) * entry_multiplier
         entry_target_value = equity * entry_position_pct / 100 * entry_multiplier
+        current_open_risk_pct = clean_float(metrics_now.get("openRiskPct"), 0.0, 0.0)
+        remaining_open_risk_pct = max(0.0, max_open_risk_pct - current_open_risk_pct)
+        open_risk_cap_value = equity * remaining_open_risk_pct / 100 / (stop_distance_pct / 100) if stop_distance_pct > 0 else 0.0
         position_value = risk_position_value
         cash = clean_float(account.get("cashUsdt"), 0.0, 0.0)
-        position_value = min(position_value, entry_target_value, cash, bucket_remaining_value, single_remaining_value)
+        position_value = min(position_value, entry_target_value, cash, bucket_remaining_value, single_remaining_value, open_risk_cap_value)
         if position_value <= 0:
             run_log.append({"symbol": symbol, "action": "skip", "reason": "模拟现金不足"})
+            continue
+        position_pct = position_value / equity * 100 if equity > 0 else 0.0
+        if position_pct < 1.0:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": "按风险反推后实际仓位低于 1%，放弃开仓"})
             continue
         cap_notes: list[str] = []
         if position_value < risk_position_value - 0.01:
@@ -1114,6 +1263,8 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
                 cap_notes.append(f"{bucket_label} {bucket_target_pct:g}% 上限")
             if single_remaining_value <= position_value + 0.01:
                 cap_notes.append(f"单品种 {max_single_pct:g}% 上限")
+            if open_risk_cap_value <= position_value + 0.01:
+                cap_notes.append(f"组合开放风险 {max_open_risk_pct:g}% 上限")
         buy_reason = f"建议买入信号；基础开仓 {entry_position_pct:g}%"
         if entry_multiplier < 1:
             buy_reason += "；连续亏损降仓 50%"
@@ -1139,11 +1290,36 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             "openedSignalId": signal_id,
             "source": "short_term",
             "trigger": str(short_term.get("trigger") or ""),
+            "entryType": str(short_term.get("entry_type") or short_term.get("trigger") or ""),
             "riskReward": clean_float(short_term.get("risk_reward"), 0.0, 0.0),
             "stopDistancePct": stop_distance_pct,
+            "positionPct": position_pct,
+            "riskBudgetPct": risk_per_trade_pct,
+            "initialRiskPerShare": price - stop_price,
+            "target1R": clean_float(short_term.get("target1_r"), 0.0, 0.0) or None,
+            "target2R": clean_float(short_term.get("target2_r"), 0.0, 0.0) or None,
+            "maxFavorableR": 0.0,
+            "maxAdverseR": 0.0,
+            "slippagePct": slippage_pct,
             "entryPositionPct": entry_position_pct,
             "allocationCapPct": bucket_target_pct,
             "singleCapPct": max_single_pct,
+        }
+        trade_extra = {
+            "assetType": asset_type,
+            "entryType": str(short_term.get("entry_type") or short_term.get("trigger") or ""),
+            "stopPrice": stop_price,
+            "stopDistancePct": stop_distance_pct,
+            "positionPct": position_pct,
+            "riskBudgetPct": risk_per_trade_pct,
+            "target1Price": target_price,
+            "target2Price": target2_price,
+            "target1R": clean_float(short_term.get("target1_r"), 0.0, 0.0) or None,
+            "target2R": clean_float(short_term.get("target2_r"), 0.0, 0.0) or None,
+            "eventRiskStatus": str(short_term.get("event_risk_status") or ""),
+            "volumeConfirmed": bool(short_term.get("pullback_volume_ok") or short_term.get("breakout_volume_ok")),
+            "planFollowed": True,
+            "slippagePct": slippage_pct,
         }
         append_paper_trade(
             account,
@@ -1154,6 +1330,7 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             reason=buy_reason,
             signal_id=signal_id,
             executed_at=executed_at,
+            extra=trade_extra,
         )
         processed.append(signal_id)
         run_log.append({"symbol": symbol, "action": "buy", "reason": buy_reason, "quantity": quantity, "price": price})
@@ -1852,8 +2029,19 @@ class DashboardServer(ThreadingHTTPServer):
         account = self.load_paper_account_config()
         settings = account.get("settings") if isinstance(account.get("settings"), dict) else {}
         settings = dict(settings)
-        if "entryPositionPct" in settings_patch:
-            settings["entryPositionPct"] = settings_patch.get("entryPositionPct")
+        for key in (
+            "entryPositionPct",
+            "riskPerTradePct",
+            "targetEtfWeightPct",
+            "targetStockWeightPct",
+            "maxSinglePositionPct",
+            "maxOpenRiskPct",
+            "stopExecutionMode",
+            "slippagePct",
+            "autoRun",
+        ):
+            if key in settings_patch:
+                settings[key] = settings_patch.get(key)
         account["settings"] = settings
         return self.save_paper_account_config(account)
 

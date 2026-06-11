@@ -2625,29 +2625,48 @@ function ShortTermSignalPlan(event) {
   const maxPositionText = shortTerm.account_equity_configured && Number.isFinite(shortTerm.max_position_value)
     ? formatUsdt(shortTerm.max_position_value)
     : "需配置账户净值后计算";
+  const positionPctText = Number.isFinite(Number(shortTerm.position_pct))
+    ? pct(Number(shortTerm.position_pct))
+    : "需结合账户净值";
+  const entryTypeText = shortTerm.entry_type === "breakout" ? "突破买入" : shortTerm.entry_type === "pullback" ? "回踩买入" : "未触发";
+  const eventRiskText = shortTerm.event_risk_status === "unknown" ? "未知，需人工确认" : shortTerm.event_risk_status || "未接入";
+  const riskNotes = Array.isArray(shortTerm.risk_notes) && shortTerm.risk_notes.length
+    ? shortTerm.risk_notes.join("、")
+    : "暂无额外风险提示";
   const rejectText = shortTerm.reject_reasons?.length
     ? shortTerm.reject_reasons.slice(0, 3).join("、")
     : "当前短线条件通过";
-  const sellReasonText = shortTerm.sell_reasons?.length
-    ? shortTerm.sell_reasons.join("、")
+  const sellReasonText = shortTerm.hard_exit_reasons?.length
+    ? `硬退出：${shortTerm.hard_exit_reasons.join("、")}`
+    : shortTerm.soft_exit_reasons?.length
+      ? `软退出：${shortTerm.soft_exit_reasons.join("、")}`
+      : shortTerm.sell_reasons?.length
+        ? shortTerm.sell_reasons.join("、")
     : "未触发持仓卖出条件";
   return `
     <section class="short-term-plan-card">
       <div class="short-term-plan-header">
         <div>
           <h3>2-14 天短线交易计划</h3>
-          <p>${escapeHtml(shortTermTriggerLabel(shortTerm))} · ${escapeHtml(shortTerm.timeframe || "2-14D")} · 行业风险${escapeHtml(shortTerm.industry_risk_status === "not_connected" ? "未接入" : "已接入")}</p>
+          <p>${escapeHtml(entryTypeText)} · ${escapeHtml(shortTerm.timeframe || "2-14D")} · 事件风险 ${escapeHtml(eventRiskText)}</p>
         </div>
-        <span class="short-term-rr ${Number(shortTerm.risk_reward || 0) >= 1.8 ? "good" : "weak"}">R/R ${shortTerm.risk_reward === null || shortTerm.risk_reward === undefined ? "—" : fmt.format(shortTerm.risk_reward)}</span>
+        <span class="short-term-rr ${Number(shortTerm.target1_r || 0) >= 1.8 ? "good" : Number(shortTerm.target1_r || 0) >= 1.3 ? "neutral" : "weak"}">TP1 ${shortTerm.target1_r === null || shortTerm.target1_r === undefined ? "—" : `${fmt.format(shortTerm.target1_r)}R`}</span>
       </div>
       <dl class="short-term-plan-grid">
         <div><dt>参考入场</dt><dd>${price(shortTerm.entry_price)}</dd></div>
         <div><dt>止损位</dt><dd>${price(shortTerm.stop_price)}</dd></div>
         <div><dt>第一止盈</dt><dd>${price(shortTerm.target_price)}</dd></div>
+        <div><dt>TP1 R 值</dt><dd>${shortTerm.target1_r === null || shortTerm.target1_r === undefined ? "—" : `${fmt.format(shortTerm.target1_r)}R`}</dd></div>
         <div><dt>第二目标</dt><dd>${price(shortTerm.target2_price)}</dd></div>
+        <div><dt>TP2 R 值</dt><dd>${shortTerm.target2_r === null || shortTerm.target2_r === undefined ? "—" : `${fmt.format(shortTerm.target2_r)}R`}</dd></div>
         <div><dt>止损距离</dt><dd>${pct(shortTerm.stop_distance_pct)}</dd></div>
+        <div><dt>实际仓位</dt><dd>${escapeHtml(positionPctText)}</dd></div>
+        <div><dt>ATR14</dt><dd>${shortTerm.atr_pct === null || shortTerm.atr_pct === undefined ? "—" : pct(shortTerm.atr_pct)}</dd></div>
+        <div><dt>动态突破缓冲</dt><dd>${pct(shortTerm.breakout_buffer_pct)}</dd></div>
+        <div><dt>动态止损缓冲</dt><dd>${pct(shortTerm.stop_buffer_pct)}</dd></div>
         <div><dt>站稳确认</dt><dd>${escapeHtml(shortTermPullbackConfirmationText(shortTerm))}</dd></div>
-        <div><dt>仓位上限</dt><dd>${escapeHtml(maxPositionText)}</dd></div>
+        <div><dt>风险预算仓位</dt><dd>${escapeHtml(maxPositionText)}</dd></div>
+        <div><dt>信心分</dt><dd>${Number.isFinite(Number(shortTerm.confidence_score)) ? `${Math.round(Number(shortTerm.confidence_score))}/100` : "—"}</dd></div>
       </dl>
       <div class="short-term-plan-note">
         <span>${event.type === "short_sell" ? "卖出触发" : "买入校验"}</span>
@@ -2655,7 +2674,7 @@ function ShortTermSignalPlan(event) {
       </div>
       <div class="short-term-plan-note muted">
         <span>风控提示</span>
-        <p>单笔风险按账户净值 ${pct(shortTerm.risk_per_trade_pct)} 估算；连续亏损 2-3 笔后建议降低仓位或暂停交易。</p>
+        <p>实际仓位 = min(基础开仓 ${pct(shortTerm.base_position_pct || 5)}、单票剩余额度 ${pct(shortTerm.max_single_position_pct || 15)}、风险预算 ${pct(shortTerm.risk_per_trade_pct)} / 止损距离)；组合开放风险默认不超过 ${pct(shortTerm.max_open_risk_pct || 3)}。${escapeHtml(riskNotes)}</p>
       </div>
     </section>
   `;
@@ -3391,12 +3410,9 @@ function PaperMetricsPanel(stats) {
   const etfTargetPct = Number(paperAccount.settings?.targetEtfWeightPct ?? 60);
   const stockTargetPct = Number(paperAccount.settings?.targetStockWeightPct ?? 40);
   const singleCapPct = Number(paperAccount.settings?.maxSinglePositionPct ?? 15);
-  const openRisk = paperPositionRows().reduce((sum, position) => {
-    const stop = Number(position.stopPrice || 0);
-    const current = Number(position.currentPrice || 0);
-    const quantity = Number(position.quantity || 0);
-    return stop > 0 && current > stop ? sum + (current - stop) * quantity : sum;
-  }, 0);
+  const maxOpenRiskPct = Number(paperAccount.settings?.maxOpenRiskPct ?? 3);
+  const openRisk = Number(stats.openRiskUsdt ?? 0);
+  const openRiskPct = Number(stats.openRiskPct ?? 0);
   return `
     <section class="paper-panel-card">
       <div class="paper-panel-header">
@@ -3419,7 +3435,7 @@ function PaperMetricsPanel(stats) {
         <div><dt>个股仓位</dt><dd>${pct(stats.stockWeightPct)} / ${pct(stockTargetPct)}</dd></div>
         <div><dt>单品种上限</dt><dd>${stats.largestPositionSymbol ? `${escapeHtml(stats.largestPositionSymbol)} ${pct(stats.largestPositionWeightPct)} / ${pct(singleCapPct)}` : `上限 ${pct(singleCapPct)}`}</dd></div>
         <div><dt>浮动盈亏</dt><dd class="${changeClass(stats.unrealizedPnlUsdt)}">${formatSignedUsdt(stats.unrealizedPnlUsdt)}</dd></div>
-        <div><dt>估算开口风险</dt><dd>${formatUsdt(openRisk)}</dd></div>
+        <div><dt>开放风险</dt><dd>${formatUsdt(openRisk)} <small>${pct(openRiskPct)} / ${pct(maxOpenRiskPct)}</small></dd></div>
         <div><dt>单笔风险</dt><dd>${pct(Number(paperAccount.settings?.riskPerTradePct || 1))}</dd></div>
         <div><dt>连续亏损</dt><dd>${paperAccount.risk?.lossStreak || 0} 笔</dd></div>
         <div><dt>执行模式</dt><dd>${paperAccount.settings?.autoRun === false ? "手动" : "自动"}</dd></div>
@@ -3521,6 +3537,7 @@ function PaperTradesTable(trades) {
 
 function PaperTradeRow(trade) {
   const pnl = Number(trade.realizedPnlUsdt || 0);
+  const realizedR = Number(trade.realizedR);
   return `
     <tr>
       <td>${escapeHtml(formatDateTime(trade.executedAt))}</td>
@@ -3529,7 +3546,10 @@ function PaperTradeRow(trade) {
       <td>${formatAssetQuantity(trade.quantity)}</td>
       <td>${formatUsdt(trade.price)}</td>
       <td>${formatUsdt(trade.valueUsdt)}</td>
-      <td class="${changeClass(pnl)}">${trade.side === "SELL" ? formatSignedUsdt(pnl) : "—"}</td>
+      <td class="${changeClass(pnl)}">
+        ${trade.side === "SELL" ? formatSignedUsdt(pnl) : "—"}
+        ${trade.side === "SELL" && Number.isFinite(realizedR) ? `<small>${fmt.format(realizedR)}R</small>` : ""}
+      </td>
       <td>${escapeHtml(trade.reason || "模拟交易")}</td>
     </tr>
   `;
@@ -4886,16 +4906,21 @@ function CurrentStrategyRuleBook(config) {
   const breakoutWindow = Number(shortTerm.breakout_window_days || 14);
   const pullbackLookback = Number(shortTerm.pullback_lookback_days || 5);
   const nearSupportPct = formatRulePercent(shortTerm.near_support_pct ?? 1);
-  const reclaimBufferPct = formatRulePercent(shortTerm.pullback_reclaim_buffer_pct ?? 0.4);
+  const atrPeriod = Number(shortTerm.atr_period || 14);
+  const reclaimBufferPct = `max(${formatRulePercent(shortTerm.min_support_confirm_buffer_pct ?? 0.3)}, ${fmt.format(Number(shortTerm.atr_support_multiplier ?? 0.2))}×ATR${atrPeriod}/收盘价)`;
   const volumeFloorPct = formatRulePercent(shortTerm.pullback_volume_floor_pct ?? 80);
-  const breakoutBufferPct = formatRulePercent(shortTerm.breakout_buffer_pct ?? 0.2);
+  const breakoutBufferPct = `max(${formatRulePercent(shortTerm.min_breakout_buffer_pct ?? 0.3)}, ${fmt.format(Number(shortTerm.atr_breakout_multiplier ?? 0.25))}×ATR${atrPeriod}/收盘价)`;
   const volumeMultiplier = Number(shortTerm.volume_multiplier || 1.2).toFixed(1);
-  const stopBufferPct = formatRulePercent(shortTerm.stop_buffer_pct ?? 0.2);
+  const stopBufferPct = `max(${formatRulePercent(shortTerm.min_stop_buffer_pct ?? 0.2)}, ${fmt.format(Number(shortTerm.atr_stop_multiplier ?? 0.25))}×ATR${atrPeriod}/收盘价)`;
   const maxStopPct = formatRulePercent(shortTerm.max_stop_distance_pct ?? 4);
-  const minRiskReward = Number(shortTerm.min_risk_reward || 1.8);
+  const minTarget1R = Number(shortTerm.min_target1_r || 1.3);
+  const idealTarget1R = Number(shortTerm.ideal_target1_r || 1.8);
   const secondTargetR = Number(shortTerm.second_target_r || 2);
   const weakMomentumPct = formatRulePercent(shortTerm.weak_momentum_5d_pct ?? -2);
   const riskPerTradePct = formatRulePercent(shortTerm.risk_per_trade_pct ?? 1);
+  const basePositionPct = formatRulePercent(shortTerm.base_position_pct ?? 5);
+  const maxSinglePct = formatRulePercent(shortTerm.max_single_position_pct ?? 15);
+  const maxOpenRiskPct = formatRulePercent(shortTerm.max_open_risk_pct ?? 3);
   const minLiquidity = formatRuleMoney(shortTerm.min_avg_dollar_volume_20 ?? 50000000);
   const smaSlopePct = formatRulePercent(shortTerm.sma20_flat_slope_pct_3d ?? -0.2);
   const failedBreakoutPct = formatRulePercent(priceBehavior.failed_breakout_pct ?? 1);
@@ -4918,9 +4943,9 @@ function CurrentStrategyRuleBook(config) {
       tone: "good",
       points: [
         `回踩买入：近 ${pullbackLookback} 日触及 SMA${shortSma}、前低或平台支撑附近 ${nearSupportPct} 内。`,
-        `站稳确认：收盘高于支撑 ${reclaimBufferPct}，或次日不跌回支撑，或成交量不低于 20 日均量 ${volumeFloorPct}。`,
+        `站稳确认：收盘高于支撑 ${reclaimBufferPct}，或次日不跌回支撑；成交量不低于 20 日均量 ${volumeFloorPct} 只作为加分确认，不能单独触发。`,
         `突破买入：有效突破近 ${breakoutWindow} 日高点/平台压力。`,
-        `突破确认：成交量达到 20 日均量 ${volumeMultiplier}x，或收盘突破压力 ${breakoutBufferPct} 以上。`,
+        `突破确认：收盘价高于压力位 + ${breakoutBufferPct}；成交量达到 20 日均量 ${volumeMultiplier}x 会提高信号质量。`,
       ],
     },
     {
@@ -4930,7 +4955,7 @@ function CurrentStrategyRuleBook(config) {
       points: [
         `止损位放在技术失效位下方 ${stopBufferPct}：回踩低点、平台下沿、SMA${shortSma} 或可用支撑。`,
         `如果止损距离超过 ${maxStopPct}，不生成建议买入。`,
-        `模拟盘持仓时，只要当前价低于或等于止损位，就按快照价退出。`,
+        `模拟盘默认 intraday_stop：盘中低点触及即止损，并按止损价下方滑点或跳空更差价成交。`,
       ],
     },
     {
@@ -4939,7 +4964,7 @@ function CurrentStrategyRuleBook(config) {
       tone: "warning",
       points: [
         `第一止盈优先看近 ${breakoutWindow} 日高点、前高、箱体上沿或关键压力。`,
-        `若没有明确阻力，第一目标按不低于 1:${minRiskReward} 的风险收益比计算。`,
+        `TP1 必须至少达到 ${fmt.format(minTarget1R)}R；理想为 ${fmt.format(idealTarget1R)}R，若无明确阻力则按 ${fmt.format(idealTarget1R)}R 推算。`,
         `第二目标按 ${secondTargetR}R 计算；到第一止盈后模拟盘卖出一半，并把剩余止损上移到不低于成本。`,
       ],
     },
@@ -4948,9 +4973,9 @@ function CurrentStrategyRuleBook(config) {
       eyebrow: "Exit Signal",
       tone: "neutral",
       points: [
-        `跌破短线止损位、跌破 SMA${shortSma}、跌破近 ${pullbackLookback} 日低点时提示退出。`,
-        `突破失败：跌回突破位下方 ${failedBreakoutPct} 内外的失效区间时提示退出。`,
-        `5 日动量低于 ${weakMomentumPct} 视为明显转弱，也会生成建议卖出。`,
+        `硬退出：跌破初始止损、关键结构位或跳空跌破止损，模拟盘立即执行。`,
+        `软退出：跌破 SMA${shortSma}、跌破近 ${pullbackLookback} 日低点、突破失败或 5 日动量低于 ${weakMomentumPct}，用于减仓/收紧止损/等确认。`,
+        `时间止损：5 天内最高浮盈未到 0.8R 预警，10 天未到 TP1 或超过 14 天仍未完成目标则退出。`,
       ],
     },
     {
@@ -4958,10 +4983,10 @@ function CurrentStrategyRuleBook(config) {
       eyebrow: "Risk Control",
       tone: "info",
       points: [
-        `单笔风险预算默认按账户净值 ${riskPerTradePct} 估算。`,
-        `模拟盘另有单次基础开仓比例，默认 5%；单一品种累计上限是 15%，不是每次买入额。`,
+        `实际仓位 = min(基础开仓 ${basePositionPct}、单票剩余额度 ${maxSinglePct}、单笔风险预算 ${riskPerTradePct} / 止损距离)。`,
+        `组合总开放风险默认不超过 ${maxOpenRiskPct}；ETF/个股模拟仓位仍受 60% / 40% 桶限制。`,
         `连续亏损 2 笔后新开仓减半，连续亏损 3 笔后暂停新开仓，只允许已有仓位退出。`,
-        `当前股票观察池 ${stockCount} 只；ETF/个股模拟仓位仍受 60% / 40% 桶限制。`,
+        `当前股票观察池 ${stockCount} 只；事件风险为 true 时不生成买入建议，unknown 时降低评分并提示人工确认。`,
       ],
     },
   ];
@@ -5064,10 +5089,16 @@ function CurrentStrategyPanel(model) {
       helper: "止损过远时放弃建议买入",
     }),
     SettingsSelect({
-      label: "最低风险收益比",
-      path: "short_term.min_risk_reward",
-      options: [1.5, 1.8, 2, 2.5, 3].map((value) => ({ value, label: `1:${value}` })),
-      helper: "低于该盈亏比时不生成建议买入",
+      label: "TP1 最低 R",
+      path: "short_term.min_target1_r",
+      options: [1.0, 1.3, 1.5, 1.8, 2].map((value) => ({ value, label: `${value}R` })),
+      helper: "第一止盈低于该 R 值时不生成建议买入",
+    }),
+    SettingsSelect({
+      label: "TP1 理想 R",
+      path: "short_term.ideal_target1_r",
+      options: [1.5, 1.8, 2, 2.5, 3].map((value) => ({ value, label: `${value}R` })),
+      helper: "无明确阻力时用于推算第一止盈",
     }),
     SettingsSelect({
       label: "短线突破窗口",
@@ -5082,10 +5113,10 @@ function CurrentStrategyPanel(model) {
       helper: "突破确认时的成交量参考",
     }),
     SettingsSelect({
-      label: "回踩站稳缓冲",
-      path: "short_term.pullback_reclaim_buffer_pct",
-      options: [0.3, 0.4, 0.5].map((value) => ({ value, label: `${value}%` })),
-      helper: "收盘至少高于支撑该幅度，可确认回踩站稳",
+      label: "ATR 周期",
+      path: "short_term.atr_period",
+      options: [10, 14, 20].map((value) => ({ value, label: `ATR${value}` })),
+      helper: "用于动态突破、站稳和止损缓冲",
     }),
     SettingsSelect({
       label: "回踩量能底线",
@@ -5094,10 +5125,28 @@ function CurrentStrategyPanel(model) {
       helper: "最新成交量低于 20 日均量该比例则视为萎缩",
     }),
     SettingsSelect({
-      label: "止损缓冲",
-      path: "short_term.stop_buffer_pct",
+      label: "突破缓冲下限",
+      path: "short_term.min_breakout_buffer_pct",
+      options: [0.2, 0.3, 0.5, 0.8].map((value) => ({ value, label: `${value}%` })),
+      helper: "实际突破缓冲会与 ATR 动态值取更大者",
+    }),
+    SettingsSelect({
+      label: "止损缓冲下限",
+      path: "short_term.min_stop_buffer_pct",
       options: [0.1, 0.2, 0.3, 0.5].map((value) => ({ value, label: `${value}%` })),
-      helper: "止损放在技术失效位下方的缓冲",
+      helper: "实际止损缓冲会与 ATR 动态值取更大者",
+    }),
+    SettingsSelect({
+      label: "基础开仓比例",
+      path: "short_term.base_position_pct",
+      options: [2, 3, 5, 7.5, 10].map((value) => ({ value, label: `${value}%` })),
+      helper: "仓位公式的基础上限，不代表每次都买满",
+    }),
+    SettingsSelect({
+      label: "组合开放风险",
+      path: "short_term.max_open_risk_pct",
+      options: [1, 2, 3, 4, 5].map((value) => ({ value, label: `${value}%` })),
+      helper: "所有持仓到止损位的潜在亏损总和上限",
     }),
     SettingsSelect({
       label: "弱动量卖出阈值",
