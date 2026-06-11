@@ -12,6 +12,7 @@ import copy
 import csv
 import datetime as dt
 import json
+import math
 import statistics
 import sys
 from pathlib import Path
@@ -249,20 +250,68 @@ def save_run_summary(payload: dict[str, Any]) -> Path:
     out_dir = ROOT / ".local-data-backup" / "backtest_runs"
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    path = out_dir / f"{stamp}-{payload.get('scenario', 'run')}.json"
+    return_pct = extract_total_return_pct(payload)
+    return_part = f"-ret{return_pct:+.2f}" if return_pct is not None else ""
+    scenario = safe_filename_part(str(payload.get("scenario") or "run"))
+    path = out_dir / f"{stamp}{return_part}-{scenario}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    latest = sorted(out_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
-    latest = [item for item in latest if item.name != "latest_5.json"][:5]
-    index = [
-        {
-            "path": str(item),
-            "name": item.name,
-            "modifiedAt": dt.datetime.fromtimestamp(item.stat().st_mtime).isoformat(timespec="seconds"),
-        }
-        for item in latest
-    ]
-    (out_dir / "latest_5.json").write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_run_indexes(out_dir)
     return path
+
+
+def safe_filename_part(value: str) -> str:
+    cleaned = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "-" for ch in value.strip())
+    cleaned = "-".join(part for part in cleaned.split("-") if part)
+    return cleaned[:120] or "run"
+
+
+def extract_total_return_pct(payload: dict[str, Any]) -> float | None:
+    candidates = [
+        payload.get("combined"),
+        (payload.get("result") or {}).get("summary") if isinstance(payload.get("result"), dict) else None,
+        payload.get("summary"),
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        value = candidate.get("totalReturnPct")
+        try:
+            if value is None:
+                continue
+            number = float(value)
+            return number if math.isfinite(number) else None
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def run_index_entry(path: Path) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+    return_pct = extract_total_return_pct(payload) if isinstance(payload, dict) else None
+    return {
+        "path": str(path),
+        "name": path.name,
+        "scenario": payload.get("scenario") if isinstance(payload, dict) else None,
+        "totalReturnPct": return_pct,
+        "modifiedAt": dt.datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+    }
+
+
+def write_run_indexes(out_dir: Path) -> None:
+    runs = [item for item in out_dir.glob("*.json") if item.name not in {"latest_5.json", "top_return_5.json"}]
+    latest = sorted(runs, key=lambda item: item.stat().st_mtime, reverse=True)[:5]
+    latest_index = [run_index_entry(item) for item in latest]
+    top_index = sorted(
+        [entry for entry in (run_index_entry(item) for item in runs) if entry.get("totalReturnPct") is not None],
+        key=lambda entry: float(entry["totalReturnPct"]),
+        reverse=True,
+    )[:5]
+    (out_dir / "latest_5.json").write_text(json.dumps(latest_index, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out_dir / "top_return_5.json").write_text(json.dumps(top_index, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def main() -> int:
