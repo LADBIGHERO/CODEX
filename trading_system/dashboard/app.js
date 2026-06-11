@@ -2452,6 +2452,21 @@ function shortTermTriggerLabel(shortTerm) {
   return "短线条件";
 }
 
+function shortTermPullbackConfirmationText(shortTerm) {
+  if (!shortTerm?.pullback_base_setup && shortTerm?.trigger !== "pullback") return "—";
+  const confirmations = [];
+  if (shortTerm.pullback_price_reclaim) {
+    confirmations.push(`收盘高于支撑 ${pct(Number(shortTerm.pullback_reclaim_buffer_pct ?? 0.4))}`);
+  }
+  if (shortTerm.pullback_next_day_hold) {
+    confirmations.push("次日未跌回支撑");
+  }
+  if (shortTerm.pullback_volume_ok) {
+    confirmations.push(`量能不低于 ${pct(Number(shortTerm.pullback_volume_floor_pct ?? 80))}`);
+  }
+  return confirmations.length ? confirmations.join(" / ") : "未确认";
+}
+
 function renderSignalPage(items, snapshot) {
   const allEvents = buildSignalEvents(items, snapshot);
   renderSignalSummary(allEvents);
@@ -2631,6 +2646,7 @@ function ShortTermSignalPlan(event) {
         <div><dt>第一止盈</dt><dd>${price(shortTerm.target_price)}</dd></div>
         <div><dt>第二目标</dt><dd>${price(shortTerm.target2_price)}</dd></div>
         <div><dt>止损距离</dt><dd>${pct(shortTerm.stop_distance_pct)}</dd></div>
+        <div><dt>站稳确认</dt><dd>${escapeHtml(shortTermPullbackConfirmationText(shortTerm))}</dd></div>
         <div><dt>仓位上限</dt><dd>${escapeHtml(maxPositionText)}</dd></div>
       </dl>
       <div class="short-term-plan-note">
@@ -4926,6 +4942,18 @@ function CurrentStrategyPanel(model) {
       path: "short_term.volume_multiplier",
       options: [1, 1.2, 1.5, 2].map((value) => ({ value, label: `${value.toFixed(1)}x` })),
       helper: "突破确认时的成交量参考",
+    }),
+    SettingsSelect({
+      label: "回踩站稳缓冲",
+      path: "short_term.pullback_reclaim_buffer_pct",
+      options: [0.3, 0.4, 0.5].map((value) => ({ value, label: `${value}%` })),
+      helper: "收盘至少高于支撑该幅度，可确认回踩站稳",
+    }),
+    SettingsSelect({
+      label: "回踩量能底线",
+      path: "short_term.pullback_volume_floor_pct",
+      options: [70, 80, 90, 100].map((value) => ({ value, label: `${value}%` })),
+      helper: "最新成交量低于 20 日均量该比例则视为萎缩",
     }),
     SettingsSelect({
       label: "止损缓冲",

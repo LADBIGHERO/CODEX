@@ -325,6 +325,8 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
         "breakout_window_days": 14,
         "pullback_lookback_days": 5,
         "near_support_pct": 1.0,
+        "pullback_reclaim_buffer_pct": 0.4,
+        "pullback_volume_floor_pct": 80.0,
         "breakout_buffer_pct": 0.2,
         "volume_multiplier": 1.2,
         "stop_buffer_pct": 0.2,
@@ -386,17 +388,42 @@ def build_short_term_analysis(
         if value is not None and value > 0 and value <= entry_price
     ]
     support_base = max(support_candidates) if support_candidates else None
-    recent_touch_support = bool(
+    support_touch_indices: list[int] = []
+    if support_base:
+        start_index = max(0, len(bars) - lookback)
+        support_touch_indices = [
+            idx
+            for idx in range(start_index, len(bars))
+            if abs(bars[idx].low - support_base) / support_base * 100 <= float(rules["near_support_pct"])
+        ]
+    recent_touch_support = bool(support_touch_indices)
+    reclaim_buffer_pct = float(rules["pullback_reclaim_buffer_pct"])
+    volume_floor_pct = float(rules["pullback_volume_floor_pct"])
+    pullback_price_reclaim = bool(
         support_base
-        and any(abs(bar.low - support_base) / support_base * 100 <= float(rules["near_support_pct"]) for bar in bars[-lookback:])
+        and latest.close >= support_base * (1 + reclaim_buffer_pct / 100)
     )
-    pullback_setup = bool(
+    pullback_next_day_hold = bool(
+        support_base
+        and any(
+            touch_index + 1 < len(bars)
+            and bars[touch_index + 1].close >= support_base
+            for touch_index in support_touch_indices
+        )
+    )
+    pullback_volume_ok = bool(
+        avg_volume20 is not None
+        and latest.volume >= avg_volume20 * volume_floor_pct / 100
+    )
+    pullback_confirmation_ok = bool(pullback_price_reclaim or pullback_next_day_hold or pullback_volume_ok)
+    pullback_base_setup = bool(
         support_base
         and recent_touch_support
         and latest.close > latest.open
         and sma20 is not None
         and latest.close > sma20
     )
+    pullback_setup = bool(pullback_base_setup and pullback_confirmation_ok)
     breakout_setup = bool(
         breakout_level
         and latest.close > breakout_level
@@ -472,6 +499,8 @@ def build_short_term_analysis(
     for ok, reason in checks:
         if not ok:
             reject_reasons.append(reason)
+    if pullback_base_setup and not pullback_confirmation_ok and not breakout_setup:
+        reject_reasons.append("回踩确认不足：收盘未高于支撑缓冲、无次日支撑确认且量能萎缩")
 
     return {
         "timeframe": f"{rules['timeframe_days'][0]}-{rules['timeframe_days'][1]}D",
@@ -482,7 +511,14 @@ def build_short_term_analysis(
         "price_above_sma20": price_above_sma20,
         "sma20_slope_pct_3d": sma20_slope_pct_3d,
         "sma20_flat_or_up": sma20_flat_or_up,
+        "pullback_base_setup": pullback_base_setup,
         "pullback_setup": pullback_setup,
+        "pullback_confirmation_ok": pullback_confirmation_ok,
+        "pullback_price_reclaim": pullback_price_reclaim,
+        "pullback_next_day_hold": pullback_next_day_hold,
+        "pullback_volume_ok": pullback_volume_ok,
+        "pullback_reclaim_buffer_pct": reclaim_buffer_pct,
+        "pullback_volume_floor_pct": volume_floor_pct,
         "breakout_setup": breakout_setup,
         "trigger": trigger,
         "entry_price": entry_price,
