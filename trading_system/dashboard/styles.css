@@ -3334,6 +3334,116 @@ td > small {
   background: var(--line);
 }
 
+.strategy-rule-book {
+  margin: 0 0 18px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.strategy-rule-book-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 15px 16px;
+  border-bottom: 1px solid var(--soft-line);
+  background: #fbfdff;
+}
+
+.strategy-rule-book-header h3 {
+  margin: 0 0 4px;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 850;
+}
+
+.strategy-rule-book-header p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.strategy-rule-book-header > span {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  border: 1px solid #bbf7d0;
+  border-radius: 999px;
+  background: #ecfdf3;
+  color: var(--color-primary);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.strategy-rule-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1px;
+  background: var(--soft-line);
+}
+
+.strategy-rule-card {
+  min-width: 0;
+  padding: 14px;
+  background: #fff;
+  border-top: 3px solid var(--text-muted);
+}
+
+.strategy-rule-card.good { border-top-color: var(--color-primary); }
+.strategy-rule-card.danger { border-top-color: var(--color-danger); }
+.strategy-rule-card.warning { border-top-color: var(--color-warning); }
+.strategy-rule-card.info { border-top-color: var(--color-info); }
+
+.strategy-rule-card span {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.strategy-rule-card h4 {
+  margin: 4px 0 10px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.strategy-rule-card ul {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.strategy-rule-card li {
+  position: relative;
+  padding-left: 12px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.strategy-rule-card li::before {
+  content: "";
+  position: absolute;
+  top: .65em;
+  left: 0;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.strategy-rule-card.good li::before { background: var(--color-primary); }
+.strategy-rule-card.danger li::before { background: var(--color-danger); }
+.strategy-rule-card.warning li::before { background: var(--color-warning); }
+.strategy-rule-card.info li::before { background: var(--color-info); }
+
 .settings-field-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -4692,6 +4802,10 @@ body {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .strategy-rule-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .backtest-bottom-grid,
   .backtest-two-column {
     grid-template-columns: 1fr;
@@ -4738,6 +4852,15 @@ body {
 }
 
 @media (max-width: 760px) {
+  .strategy-rule-book-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .strategy-rule-grid {
+    grid-template-columns: 1fr;
+  }
+
   .current-holding-summary {
     grid-template-columns: 1fr;
   }

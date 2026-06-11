@@ -4844,6 +4844,144 @@ function SettingsReadOnly({ label, value, helper, tone = "" }) {
   `;
 }
 
+function formatRulePercent(value, fallback = "未配置") {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${fmt.format(number)}%` : fallback;
+}
+
+function formatRuleMoney(value, fallback = "未配置") {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  if (number >= 1000000000) return `${fmt.format(number / 1000000000)}B`;
+  if (number >= 1000000) return `${fmt.format(number / 1000000)}M`;
+  return fmt.format(number);
+}
+
+function StrategyRuleCard({ title, eyebrow, points, tone = "neutral" }) {
+  return `
+    <article class="strategy-rule-card ${escapeHtml(tone)}">
+      <div>
+        <span>${escapeHtml(eyebrow)}</span>
+        <h4>${escapeHtml(title)}</h4>
+      </div>
+      <ul>
+        ${points.map((point) => `<li>${escapeHtml(point)}</li>`).join("")}
+      </ul>
+    </article>
+  `;
+}
+
+function CurrentStrategyRuleBook(config) {
+  const rules = config.rules || {};
+  const shortTerm = config.short_term || {};
+  const priceBehavior = config.price_behavior || {};
+  const universe = config.universe || {};
+  const timeframe = Array.isArray(shortTerm.timeframe_days) && shortTerm.timeframe_days.length >= 2
+    ? `${shortTerm.timeframe_days[0]}-${shortTerm.timeframe_days[1]} 天`
+    : "2-14 天";
+  const riskAssets = Array.isArray(universe.risk_assets) ? universe.risk_assets.join(" / ") : "SPY / QQQ";
+  const stockCount = Array.isArray(universe.stock_assets) ? universe.stock_assets.length : 0;
+  const shortSma = Number(rules.short_sma_days || 20);
+  const supportSma = Number(rules.support_sma_days || 50);
+  const breakoutWindow = Number(shortTerm.breakout_window_days || 14);
+  const pullbackLookback = Number(shortTerm.pullback_lookback_days || 5);
+  const nearSupportPct = formatRulePercent(shortTerm.near_support_pct ?? 1);
+  const reclaimBufferPct = formatRulePercent(shortTerm.pullback_reclaim_buffer_pct ?? 0.4);
+  const volumeFloorPct = formatRulePercent(shortTerm.pullback_volume_floor_pct ?? 80);
+  const breakoutBufferPct = formatRulePercent(shortTerm.breakout_buffer_pct ?? 0.2);
+  const volumeMultiplier = Number(shortTerm.volume_multiplier || 1.2).toFixed(1);
+  const stopBufferPct = formatRulePercent(shortTerm.stop_buffer_pct ?? 0.2);
+  const maxStopPct = formatRulePercent(shortTerm.max_stop_distance_pct ?? 4);
+  const minRiskReward = Number(shortTerm.min_risk_reward || 1.8);
+  const secondTargetR = Number(shortTerm.second_target_r || 2);
+  const weakMomentumPct = formatRulePercent(shortTerm.weak_momentum_5d_pct ?? -2);
+  const riskPerTradePct = formatRulePercent(shortTerm.risk_per_trade_pct ?? 1);
+  const minLiquidity = formatRuleMoney(shortTerm.min_avg_dollar_volume_20 ?? 50000000);
+  const smaSlopePct = formatRulePercent(shortTerm.sma20_flat_slope_pct_3d ?? -0.2);
+  const failedBreakoutPct = formatRulePercent(priceBehavior.failed_breakout_pct ?? 1);
+
+  const cards = [
+    {
+      title: "买入前提",
+      eyebrow: "Entry Filter",
+      tone: "info",
+      points: [
+        `周期：只评估 ${timeframe} 短线机会，不用于自动真实下单。`,
+        `标的：非现金资产，20 日均成交额不低于 ${minLiquidity}。`,
+        `环境：大盘代理 ${riskAssets} 趋势通过，标的自身无明确风险信号。`,
+        `趋势：收盘价在 SMA${shortSma} 上方，SMA${shortSma} 近 3 日斜率不低于 ${smaSlopePct}。`,
+      ],
+    },
+    {
+      title: "买入点",
+      eyebrow: "Entry Trigger",
+      tone: "good",
+      points: [
+        `回踩买入：近 ${pullbackLookback} 日触及 SMA${shortSma}、前低或平台支撑附近 ${nearSupportPct} 内。`,
+        `站稳确认：收盘高于支撑 ${reclaimBufferPct}，或次日不跌回支撑，或成交量不低于 20 日均量 ${volumeFloorPct}。`,
+        `突破买入：有效突破近 ${breakoutWindow} 日高点/平台压力。`,
+        `突破确认：成交量达到 20 日均量 ${volumeMultiplier}x，或收盘突破压力 ${breakoutBufferPct} 以上。`,
+      ],
+    },
+    {
+      title: "止损规则",
+      eyebrow: "Stop Loss",
+      tone: "danger",
+      points: [
+        `止损位放在技术失效位下方 ${stopBufferPct}：回踩低点、平台下沿、SMA${shortSma} 或可用支撑。`,
+        `如果止损距离超过 ${maxStopPct}，不生成建议买入。`,
+        `模拟盘持仓时，只要当前价低于或等于止损位，就按快照价退出。`,
+      ],
+    },
+    {
+      title: "止盈规则",
+      eyebrow: "Take Profit",
+      tone: "warning",
+      points: [
+        `第一止盈优先看近 ${breakoutWindow} 日高点、前高、箱体上沿或关键压力。`,
+        `若没有明确阻力，第一目标按不低于 1:${minRiskReward} 的风险收益比计算。`,
+        `第二目标按 ${secondTargetR}R 计算；到第一止盈后模拟盘卖出一半，并把剩余止损上移到不低于成本。`,
+      ],
+    },
+    {
+      title: "卖出/退出",
+      eyebrow: "Exit Signal",
+      tone: "neutral",
+      points: [
+        `跌破短线止损位、跌破 SMA${shortSma}、跌破近 ${pullbackLookback} 日低点时提示退出。`,
+        `突破失败：跌回突破位下方 ${failedBreakoutPct} 内外的失效区间时提示退出。`,
+        `5 日动量低于 ${weakMomentumPct} 视为明显转弱，也会生成建议卖出。`,
+      ],
+    },
+    {
+      title: "仓位与风控",
+      eyebrow: "Risk Control",
+      tone: "info",
+      points: [
+        `单笔风险预算默认按账户净值 ${riskPerTradePct} 估算。`,
+        `模拟盘另有单次基础开仓比例，默认 5%；单一品种累计上限是 15%，不是每次买入额。`,
+        `连续亏损 2 笔后新开仓减半，连续亏损 3 笔后暂停新开仓，只允许已有仓位退出。`,
+        `当前股票观察池 ${stockCount} 只；ETF/个股模拟仓位仍受 60% / 40% 桶限制。`,
+      ],
+    },
+  ];
+
+  return `
+    <section class="strategy-rule-book">
+      <div class="strategy-rule-book-header">
+        <div>
+          <h3>交易规则说明</h3>
+          <p>按当前正式配置生成，说明买入点、卖出点、止盈和止损的实际判定口径。</p>
+        </div>
+        <span>当前策略</span>
+      </div>
+      <div class="strategy-rule-grid">
+        ${cards.map(StrategyRuleCard).join("")}
+      </div>
+    </section>
+  `;
+}
+
 function CurrentStrategyPanel(model) {
   const config = model.config || {};
   const universe = config.universe || {};
@@ -5013,6 +5151,7 @@ function CurrentStrategyPanel(model) {
       <div class="settings-guidance">
         当前页集中展示正在读取的正式策略配置；修改会先进入本地草稿预览，正式保存/发布接口尚未接入前不会改变实际信号。
       </div>
+      ${CurrentStrategyRuleBook(config)}
       ${SettingsSection("策略总览", overviewRows)}
       ${SettingsSection("仓位框架", allocationRows)}
       ${SettingsSection("2-14 天短线规则", shortTermRows)}
