@@ -174,6 +174,10 @@ class Position:
     last_add_price: float = 0.0
     out_of_rank_weeks: int = 0
     peak_price: float = 0.0
+    is_chase_trade: bool = False
+    entry_signal_close: float = 0.0
+    entry_signal_high: float = 0.0
+    entry_atr20: float = 0.0
     realized_pnl: float = 0.0
     realized_value: float = 0.0
     realized_shares: float = 0.0
@@ -303,6 +307,7 @@ class StrategyBacktester:
         out["mom20_5d_ago"] = out["mom20"].shift(5)
         out["high63"] = out["close"].rolling(63, min_periods=20).max()
         out["low10"] = out["low"].rolling(10, min_periods=5).min()
+        out["low5"] = out["low"].rolling(5, min_periods=3).min()
         out["adv20"] = (out["close"] * out["volume"]).rolling(20, min_periods=10).mean()
         out["trend_score"] = 0.6 * out["mom63"] + 0.4 * out["mom126"]
         return out
@@ -462,7 +467,7 @@ class StrategyBacktester:
 
     def execute_intraday_stops(self, date_value: dt.date, regime: str) -> None:
         for position_id, position in list(self.positions.items()):
-            if position.sleeve != "stock":
+            if position.sleeve not in {"stock", "etf_tactical"}:
                 continue
             row = self.row(position.symbol, date_value)
             if row is None:
@@ -478,7 +483,7 @@ class StrategyBacktester:
                 position_id=position_id,
                 date_value=date_value,
                 price=price,
-                reason="runner_trailing_stop" if position.is_runner else "stop_loss",
+                reason=self.stop_reason(position),
                 market_regime=regime,
                 sell_fraction=1.0,
                 exit_signal_date=date_value,
@@ -506,6 +511,19 @@ class StrategyBacktester:
         self.position_counter += 1
         position_id = f"P{self.position_counter:06d}"
         sector = SECTOR_MAP.get(order.symbol, "unknown")
+        stop_price = clean_float(order.stop_price)
+        is_chase_trade = False
+        entry_signal_close = 0.0
+        entry_signal_high = 0.0
+        entry_atr20 = 0.0
+        if order.sleeve == "etf_tactical":
+            signal_row = self.row(order.symbol, order.signal_date)
+            if signal_row is not None:
+                is_chase_trade = self.is_tactical_chase(signal_row)
+                entry_signal_close = clean_float(signal_row.get("close"))
+                entry_signal_high = clean_float(signal_row.get("high"))
+                entry_atr20 = clean_float(signal_row.get("atr20"))
+                stop_price = self.tactical_initial_stop(signal_row, price, is_chase_trade)
         position = Position(
             position_id=position_id,
             symbol=order.symbol,
@@ -518,18 +536,61 @@ class StrategyBacktester:
             sector=sector,
             theme=sector,
             entry_type="pullback" if order.sleeve == "stock" else order.sleeve,
-            initial_stop=clean_float(order.stop_price),
-            effective_stop=clean_float(order.stop_price),
-            trailing_stop=clean_float(order.stop_price),
-            base_r=max(price - clean_float(order.stop_price), 0.0),
+            initial_stop=stop_price,
+            effective_stop=stop_price,
+            trailing_stop=stop_price,
+            base_r=max(price - stop_price, 0.0),
             base_position_value=value,
             last_add_price=price,
             peak_price=price,
+            is_chase_trade=is_chase_trade,
+            entry_signal_close=entry_signal_close,
+            entry_signal_high=entry_signal_high,
+            entry_atr20=entry_atr20,
         )
         fill = self.make_fill(position, date_value, "BUY", price, shares, value / equity if equity > 0 else 0.0, -value, order.reason, regime)
         position.fills.append(fill)
         self.fills.append(fill)
         self.positions[position_id] = position
+
+    @staticmethod
+    def is_tactical_chase(row: pd.Series) -> bool:
+        close = clean_float(row.get("close"))
+        high63 = clean_float(row.get("high63"))
+        sma20 = clean_float(row.get("sma20"))
+        atr20 = clean_float(row.get("atr20"))
+        if close <= 0:
+            return False
+        return bool(
+            (high63 > 0 and close >= high63 * 0.98)
+            or (sma20 > 0 and atr20 > 0 and close > sma20 + 3.0 * atr20)
+            or (sma20 > 0 and close / sma20 - 1 > 0.08)
+        )
+
+    @staticmethod
+    def tactical_initial_stop(row: pd.Series, entry_price: float, is_chase_trade: bool) -> float:
+        atr20 = clean_float(row.get("atr20"))
+        if entry_price <= 0 or atr20 <= 0:
+            return 0.0
+        if is_chase_trade:
+            return max(
+                entry_price - 1.2 * atr20,
+                clean_float(row.get("low")) - 0.2 * atr20,
+                entry_price * 0.97,
+            )
+        return max(
+            entry_price - 2.0 * atr20,
+            clean_float(row.get("low5")) - 0.5 * atr20,
+            entry_price * 0.96,
+        )
+
+    @staticmethod
+    def stop_reason(position: Position) -> str:
+        if position.is_runner:
+            return "runner_trailing_stop"
+        if position.sleeve == "etf_tactical":
+            return "etf_tactical_stop"
+        return "stop_loss"
 
     def add_to_position(self, order: PendingOrder, date_value: dt.date, raw_open: float, regime: str) -> None:
         position_id = self.find_position_id(order.symbol, "stock")
@@ -693,6 +754,7 @@ class StrategyBacktester:
             "tp1_done": position.tp1_done,
             "tp2_done": position.tp2_done,
             "is_runner": position.is_runner,
+            "is_chase_trade": position.is_chase_trade,
             "add_count": position.add_count,
             "add_level": position.add_count,
             "slippage_pct": SLIPPAGE_PCT * 100,
@@ -739,9 +801,15 @@ class StrategyBacktester:
             row = self.row(position.symbol, date_value)
             if row is None:
                 continue
-            should_exit = clean_float(row.get("close")) < clean_float(row.get("sma20")) or clean_float(row.get("mom20")) < 0
+            quick_failure = self.tactical_chase_failure(position, row, date_value)
+            should_exit = (
+                clean_float(row.get("close")) < clean_float(row.get("sma20"))
+                or clean_float(row.get("mom20")) < 0
+                or quick_failure
+            )
             if should_exit or position.symbol != tactical_target:
-                self.queue_unique(next_date, date_value, position.symbol, "sell", "etf_tactical", "etf_tactical_exit")
+                reason = "etf_tactical_chase_failure" if quick_failure else "etf_tactical_exit"
+                self.queue_unique(next_date, date_value, position.symbol, "sell", "etf_tactical", reason)
         if tactical_target and self.find_position_id(tactical_target, "etf_tactical") is None:
             current_symbol_pct = self.symbol_pct(date_value, tactical_target)
             target = min(ETF_TACTICAL_LIMIT, max(0.0, SINGLE_ETF_LIMIT - current_symbol_pct))
@@ -903,13 +971,13 @@ class StrategyBacktester:
 
     def update_runner_trails(self, date_value: dt.date) -> None:
         for position in self.positions.values():
-            if position.sleeve != "stock":
-                continue
             row = self.row(position.symbol, date_value)
             if row is None:
                 continue
             close = clean_float(row.get("close"))
             position.peak_price = max(position.peak_price, close)
+            if position.sleeve != "stock":
+                continue
             if position.is_runner:
                 trail = max(
                     position.trailing_stop,
@@ -919,6 +987,16 @@ class StrategyBacktester:
                 )
                 position.trailing_stop = trail
                 position.effective_stop = trail
+
+    @staticmethod
+    def tactical_chase_failure(position: Position, row: pd.Series, date_value: dt.date) -> bool:
+        if position.sleeve != "etf_tactical" or not position.is_chase_trade:
+            return False
+        close = clean_float(row.get("close"))
+        if position.entry_atr20 > 0 and close < position.entry_signal_close - position.entry_atr20:
+            return True
+        holding_days = (date_value - position.opened_date).days
+        return bool(holding_days >= 3 and position.peak_price <= max(position.entry_signal_high, position.base_entry_price))
 
     def add1_signal(self, position: Position, row: pd.Series, regime: str) -> bool:
         if regime == "defensive":
@@ -1223,8 +1301,8 @@ class StrategyBacktester:
     def scenario_name(self) -> str:
         stock_cap = round(self.stock_sleeve_normal_pct * 100)
         if stock_cap == round(STOCK_SLEEVE_NORMAL * 100):
-            return "candidate-v2.1-hard-rules"
-        return f"candidate-v2.1-stock-sleeve-normal-{stock_cap}"
+            return "candidate-v2.1-tactical-chase-stops"
+        return f"candidate-v2.1-stock-sleeve-normal-{stock_cap}-tactical-chase-stops"
 
 
 def build_summary(initial_capital: float, trades: list[dict[str, Any]], equity_rows: list[dict[str, Any]]) -> dict[str, Any]:
