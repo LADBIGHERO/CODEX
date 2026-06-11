@@ -473,6 +473,141 @@ def heatmap(path: Path, monthly_rows: list[dict[str, Any]]) -> None:
     c.png(path)
 
 
+def render_charts_with_matplotlib(
+    charts: dict[str, Path],
+    equity_curve: list[dict[str, Any]],
+    dd_rows: list[dict[str, Any]],
+    symbol_rows: list[dict[str, Any]],
+    yearly_rows: list[dict[str, Any]],
+    monthly_rows: list[dict[str, Any]],
+    rolling_rows: list[dict[str, Any]],
+    holding_rows: list[dict[str, Any]],
+    entry_rows: list[dict[str, Any]],
+    r_rows: list[dict[str, Any]],
+) -> bool:
+    """Render labeled charts with matplotlib when it is available.
+
+    The standard-library PNG renderer below is intentionally dependency-free,
+    but it cannot draw text labels. This renderer is preferred for readable
+    standalone reports and falls back cleanly when matplotlib is missing.
+    """
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.dates as mdates
+        import matplotlib.pyplot as plt
+    except Exception:
+        return False
+
+    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial", "DejaVu Sans"]
+    plt.rcParams["axes.unicode_minus"] = False
+
+    def finish(fig, ax, path: Path, xlabel: str, ylabel: str) -> None:
+        ax.set_xlabel(xlabel, fontsize=10, labelpad=8)
+        ax.set_ylabel(ylabel, fontsize=10, labelpad=8)
+        ax.grid(True, axis="y", alpha=0.25)
+        fig.tight_layout()
+        fig.savefig(path, dpi=160, bbox_inches="tight")
+        plt.close(fig)
+
+    def value_color(value: float) -> str:
+        return "#16a34a" if value >= 0 else "#dc2626"
+
+    if equity_curve:
+        fig, ax = plt.subplots(figsize=(11, 5.2))
+        dates = [row["date"] for row in equity_curve]
+        values = [float(row["equity"]) for row in equity_curve]
+        ax.plot(dates, values, color="#2563eb", linewidth=2.2)
+        ax.set_title("Equity Curve", fontsize=14, weight="bold")
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+        finish(fig, ax, charts["equity"], "Exit Date", "Account Equity")
+
+    if dd_rows:
+        fig, ax = plt.subplots(figsize=(11, 5.2))
+        dates = [row["date"] for row in dd_rows]
+        values = [float(row["drawdown_pct"]) for row in dd_rows]
+        ax.fill_between(dates, values, 0, color="#fecaca", alpha=0.9)
+        ax.plot(dates, values, color="#dc2626", linewidth=1.8)
+        ax.set_title("Drawdown Curve", fontsize=14, weight="bold")
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+        finish(fig, ax, charts["drawdown"], "Exit Date", "Drawdown (%)")
+
+    if symbol_rows:
+        rows = symbol_rows[:35]
+        labels = [str(row["group"]) for row in rows][::-1]
+        values = [float(row["total_pnl"]) for row in rows][::-1]
+        fig, ax = plt.subplots(figsize=(11, max(5.5, len(rows) * 0.28)))
+        ax.barh(labels, values, color=[value_color(v) for v in values])
+        ax.axvline(0, color="#64748b", linewidth=1)
+        ax.set_title("Net PnL by Symbol", fontsize=14, weight="bold")
+        finish(fig, ax, charts["symbol"], "Net PnL", "Symbol")
+
+    if yearly_rows:
+        rows = sorted(yearly_rows, key=lambda row: str(row["group"]))
+        labels = [str(row["group"]) for row in rows]
+        values = [float(row["total_pnl"]) for row in rows]
+        fig, ax = plt.subplots(figsize=(10, 5.2))
+        ax.bar(labels, values, color=[value_color(v) for v in values])
+        ax.axhline(0, color="#64748b", linewidth=1)
+        ax.set_title("Yearly PnL", fontsize=14, weight="bold")
+        finish(fig, ax, charts["yearly"], "Year", "Net PnL")
+
+    if monthly_rows:
+        years = sorted({int(row["year"]) for row in monthly_rows})
+        matrix = [[0.0 for _ in range(12)] for _ in years]
+        for row in monthly_rows:
+            y_index = years.index(int(row["year"]))
+            matrix[y_index][int(row["month"]) - 1] = float(row["total_pnl"])
+        max_abs = max([abs(value) for row in matrix for value in row] + [1.0])
+        fig, ax = plt.subplots(figsize=(12, max(3.8, len(years) * 0.55)))
+        image = ax.imshow(matrix, cmap="RdYlGn", vmin=-max_abs, vmax=max_abs, aspect="auto")
+        ax.set_xticks(range(12), MONTH_NAMES, rotation=0)
+        ax.set_yticks(range(len(years)), [str(year) for year in years])
+        ax.set_title("Monthly PnL Heatmap", fontsize=14, weight="bold")
+        ax.set_xlabel("Month", fontsize=10, labelpad=8)
+        ax.set_ylabel("Year", fontsize=10, labelpad=8)
+        for y, row in enumerate(matrix):
+            for x, value in enumerate(row):
+                if value:
+                    ax.text(x, y, f"{value:,.0f}", ha="center", va="center", fontsize=7, color="#111827")
+        fig.colorbar(image, ax=ax, fraction=0.025, pad=0.02, label="Net PnL")
+        fig.tight_layout()
+        fig.savefig(charts["monthly"], dpi=160, bbox_inches="tight")
+        plt.close(fig)
+
+    if rolling_rows:
+        fig, ax = plt.subplots(figsize=(11, 5.2))
+        dates = [row["date"] for row in rolling_rows]
+        values = [float(row["rolling_pnl"]) for row in rolling_rows]
+        ax.plot(dates, values, color="#9333ea", linewidth=2.0)
+        ax.axhline(0, color="#64748b", linewidth=1)
+        ax.set_title("Rolling 20-Trade PnL", fontsize=14, weight="bold")
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(ax.xaxis.get_major_locator()))
+        finish(fig, ax, charts["rolling"], "Exit Date", "Rolling PnL")
+
+    def categorical_bar(path: Path, rows: list[dict[str, Any]], title: str, ylabel: str, value_key: str) -> None:
+        if not rows:
+            return
+        labels = [str(row["group"]) for row in rows]
+        values = [float(row.get(value_key) or 0.0) for row in rows]
+        fig, ax = plt.subplots(figsize=(10.5, 5.4))
+        ax.bar(labels, values, color=[value_color(v) for v in values])
+        ax.axhline(0, color="#64748b", linewidth=1)
+        ax.set_title(title, fontsize=14, weight="bold")
+        ax.tick_params(axis="x", labelrotation=25)
+        finish(fig, ax, path, "Category", ylabel)
+
+    categorical_bar(charts["holding"], holding_rows, "PnL by Holding Period", "Net PnL", "total_pnl")
+    categorical_bar(charts["entry"], entry_rows, "PnL by Entry Type", "Net PnL", "total_pnl")
+    categorical_bar(charts["r"], r_rows, "R-Multiple Distribution", "Trade Count", "trade_count")
+    return True
+
+
 def holding_bucket(days: float | None) -> str:
     if days is None:
         return "unknown"
@@ -597,6 +732,10 @@ def generate(input_path: Path, initial_capital: float, output_path: Path) -> Non
     holding_rows = group_summary(trades, lambda t: holding_bucket(t.get("holding_days")))
     entry_rows = group_summary(trades, lambda t: t.get("entry_type") or "unknown")
     r_rows = group_summary(trades, lambda t: r_bucket(t.get("r_multiple")))
+    holding_order = {"1-2 days": 1, "3-5 days": 2, "6-10 days": 3, "11-15 days": 4, "15+ days": 5, "unknown": 99}
+    r_order = {"<= -1R": 1, "-1R to 0": 2, "0 to 1R": 3, "1R to 2R": 4, "2R to 3R": 5, "> 3R": 6, "unknown": 99}
+    holding_rows.sort(key=lambda row: holding_order.get(str(row["group"]), 99))
+    r_rows.sort(key=lambda row: r_order.get(str(row["group"]), 99))
     top_winners = sorted(trades, key=lambda t: float(t.get("pnl_amount") or 0), reverse=True)[:20]
     top_losers = sorted(trades, key=lambda t: float(t.get("pnl_amount") or 0))[:20]
     rolling_rows = []
@@ -627,15 +766,28 @@ def generate(input_path: Path, initial_capital: float, output_path: Path) -> Non
         "entry": chart_dir / "entry_type_pnl.png",
         "r": chart_dir / "r_multiple_distribution.png",
     }
-    line_chart(charts["equity"], equity_curve, "equity", (37, 99, 235))
-    line_chart(charts["drawdown"], dd_rows, "drawdown_pct", (220, 38, 38))
-    bar_chart(charts["symbol"], symbol_rows, "total_pnl", 35, horizontal=True)
-    bar_chart(charts["yearly"], yearly_rows, "total_pnl", 20, horizontal=False)
-    heatmap(charts["monthly"], monthly_rows)
-    line_chart(charts["rolling"], rolling_rows, "rolling_pnl", (147, 51, 234))
-    bar_chart(charts["holding"], holding_rows, "total_pnl", 20, horizontal=False)
-    bar_chart(charts["entry"], entry_rows, "total_pnl", 20, horizontal=False)
-    bar_chart(charts["r"], r_rows, "trade_count", 20, horizontal=False)
+    rendered = render_charts_with_matplotlib(
+        charts,
+        equity_curve,
+        dd_rows,
+        symbol_rows,
+        yearly_rows,
+        monthly_rows,
+        rolling_rows,
+        holding_rows,
+        entry_rows,
+        r_rows,
+    )
+    if not rendered:
+        line_chart(charts["equity"], equity_curve, "equity", (37, 99, 235))
+        line_chart(charts["drawdown"], dd_rows, "drawdown_pct", (220, 38, 38))
+        bar_chart(charts["symbol"], symbol_rows, "total_pnl", 35, horizontal=True)
+        bar_chart(charts["yearly"], yearly_rows, "total_pnl", 20, horizontal=False)
+        heatmap(charts["monthly"], monthly_rows)
+        line_chart(charts["rolling"], rolling_rows, "rolling_pnl", (147, 51, 234))
+        bar_chart(charts["holding"], holding_rows, "total_pnl", 20, horizontal=False)
+        bar_chart(charts["entry"], entry_rows, "total_pnl", 20, horizontal=False)
+        bar_chart(charts["r"], r_rows, "trade_count", 20, horizontal=False)
 
     note_r = "" if r_values else "<p class=\"warn\">缺少初始风险数据，无法生成 R 倍数分布。</p>"
     profit_factor_text = "N/A" if metrics["profit_factor"] is None else f"{metrics['profit_factor']:.2f}"
