@@ -218,6 +218,7 @@ class StrategyBacktester:
         output_dir: Path,
         refresh_history: bool,
         stock_sleeve_normal_pct: float = STOCK_SLEEVE_NORMAL,
+        stop_model: str = "daily-low",
     ) -> None:
         self.start_date = start_date
         self.end_date = end_date
@@ -225,6 +226,7 @@ class StrategyBacktester:
         self.output_dir = output_dir
         self.refresh_history = refresh_history
         self.stock_sleeve_normal_pct = stock_sleeve_normal_pct
+        self.stop_model = stop_model
         self.symbols = sorted(set(ETF_SYMBOLS + STOCK_SYMBOLS + ["SPY", "QQQ"]))
         self.data: dict[str, pd.DataFrame] = {}
         self.dates: list[dt.date] = []
@@ -475,12 +477,19 @@ class StrategyBacktester:
             row = self.row(position.symbol, date_value)
             if row is None:
                 continue
-            low = clean_float(row.get("low"))
             raw_open = clean_float(row.get("open"))
             stop = position.trailing_stop if position.is_runner else position.effective_stop
-            if stop <= 0 or low > stop:
+            if stop <= 0:
                 continue
-            raw_exit = raw_open if raw_open <= stop else stop
+            if self.stop_model == "linear-15m":
+                raw_exit = self.linear_15m_stop_exit(row, stop)
+            else:
+                low = clean_float(row.get("low"))
+                raw_exit = raw_open if low <= stop else 0.0
+                if raw_exit > stop and raw_open > stop:
+                    raw_exit = stop
+            if raw_exit <= 0:
+                continue
             price = raw_exit * (1 - SLIPPAGE_PCT) * (1 - FEE_PCT)
             self.close_position(
                 position_id=position_id,
@@ -491,6 +500,26 @@ class StrategyBacktester:
                 sell_fraction=1.0,
                 exit_signal_date=date_value,
             )
+
+    @staticmethod
+    def linear_15m_stop_exit(row: pd.Series, stop: float) -> float:
+        raw_open = clean_float(row.get("open"))
+        raw_close = clean_float(row.get("close"))
+        if raw_open <= 0 or raw_close <= 0 or stop <= 0:
+            return 0.0
+        if raw_open <= stop:
+            return raw_open
+
+        # Synthetic regular session: 390 minutes / 15 minutes = 26 bars.
+        # This intentionally assumes a smooth open-to-close path and ignores
+        # unknown intraday high/low ordering from daily bars.
+        bars_per_day = 26
+        for step in range(1, bars_per_day + 1):
+            segment_open = raw_open + (raw_close - raw_open) * (step - 1) / bars_per_day
+            segment_close = raw_open + (raw_close - raw_open) * step / bars_per_day
+            if min(segment_open, segment_close) <= stop:
+                return segment_open if segment_open <= stop else stop
+        return 0.0
 
     def open_position(self, order: PendingOrder, date_value: dt.date, raw_open: float, regime: str) -> None:
         if order.sleeve == "stock" and len([p for p in self.positions.values() if p.sleeve == "stock"]) >= MAX_STOCK_NAMES:
@@ -1299,6 +1328,8 @@ class StrategyBacktester:
             warnings.append("No point-in-time earnings calendar was found; earnings filters were not enforced.")
         if self.qqq_top10_unavailable:
             warnings.append("No point-in-time QQQ top-10 holdings were found; QQQ overlap limits were reported but not enforced.")
+        if self.stop_model == "linear-15m":
+            warnings.append("Stop execution used a synthetic 15-minute linear open-to-close path from daily bars; real intraday bars were not used.")
         return {
             "ok": True,
             "scenario": self.scenario_name(),
@@ -1311,15 +1342,17 @@ class StrategyBacktester:
                 "stock_sleeve_normal_pct": self.stock_sleeve_normal_pct * 100,
                 "stock_sleeve_caution_pct": STOCK_SLEEVE_CAUTION * 100,
                 "stock_sleeve_defensive_pct": STOCK_SLEEVE_DEFENSIVE * 100,
+                "stop_model": self.stop_model,
             },
             "rules": strategy_rules(),
         }
 
     def scenario_name(self) -> str:
         stock_cap = round(self.stock_sleeve_normal_pct * 100)
+        stop_part = "linear15m-stop" if self.stop_model == "linear-15m" else "daily-low-stop"
         if stock_cap == round(STOCK_SLEEVE_NORMAL * 100):
-            return "candidate-v2.1-stop8-gap-tactical-chase-stops"
-        return f"candidate-v2.1-stock-sleeve-normal-{stock_cap}-stop8-gap-tactical-chase-stops"
+            return f"candidate-v2.1-{stop_part}-stop8-gap-tactical-chase-stops"
+        return f"candidate-v2.1-stock-sleeve-normal-{stock_cap}-{stop_part}-stop8-gap-tactical-chase-stops"
 
 
 def build_summary(initial_capital: float, trades: list[dict[str, Any]], equity_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1734,6 +1767,12 @@ def main() -> int:
         default=STOCK_SLEEVE_NORMAL * 100,
         help="Normal-regime stock sleeve cap as percent of account equity.",
     )
+    parser.add_argument(
+        "--stop-model",
+        choices=["daily-low", "linear-15m"],
+        default="daily-low",
+        help="Stop execution model: daily-low uses daily low, linear-15m uses a synthetic 15-minute open-to-close path.",
+    )
     args = parser.parse_args()
 
     start_date = parse_date(args.start_date)
@@ -1749,6 +1788,7 @@ def main() -> int:
         output_dir=output_dir,
         refresh_history=args.refresh_history,
         stock_sleeve_normal_pct=args.stock_sleeve_normal_pct / 100,
+        stop_model=args.stop_model,
     )
     payload = backtester.run()
     paths = write_outputs(payload, output_dir)
