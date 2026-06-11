@@ -207,6 +207,7 @@ const settingsFieldLabels = {
   "short_term.max_stop_distance_pct": "最大止损距离",
   "short_term.min_target1_r": "TP1 最低 R",
   "short_term.ideal_target1_r": "TP1 理想 R",
+  "short_term.min_risk_reward": "最低风险收益 R",
   "short_term.target2_pullback_r": "TP2 回踩 R",
   "short_term.target2_breakout_r": "TP2 突破 R",
   "short_term.risk_per_trade_pct": "单笔风险",
@@ -2678,7 +2679,7 @@ function ShortTermSignalPlan(event) {
           <h3>2-14 天短线交易计划</h3>
           <p>${escapeHtml(entryTypeText)} · ${escapeHtml(shortTerm.timeframe || "2-14D")} · 大盘 ${escapeHtml(marketRiskText)} · 个股 ${escapeHtml(individualRiskText)}</p>
         </div>
-        <span class="short-term-rr ${Number(shortTerm.target1_r || 0) >= 1.8 ? "good" : Number(shortTerm.target1_r || 0) >= 1.3 ? "neutral" : "weak"}">TP1 ${shortTerm.target1_r === null || shortTerm.target1_r === undefined ? "—" : `${fmt.format(shortTerm.target1_r)}R`}</span>
+        <span class="short-term-rr ${Number(shortTerm.target1_r || 0) >= 1.8 ? "good" : Number(shortTerm.target1_r || 0) >= 1.5 ? "neutral" : "weak"}">TP1 ${shortTerm.target1_r === null || shortTerm.target1_r === undefined ? "—" : `${fmt.format(shortTerm.target1_r)}R`}</span>
       </div>
       <dl class="short-term-plan-grid">
         <div><dt>参考入场</dt><dd>${price(shortTerm.entry_price)}</dd></div>
@@ -5228,7 +5229,8 @@ function CurrentStrategyRuleBook(config) {
   const volumeMultiplier = Number(shortTerm.volume_multiplier || 1.2).toFixed(1);
   const stopBufferPct = `max(${formatRulePercent(shortTerm.min_stop_buffer_pct ?? 0.2)}, ${fmt.format(Number(shortTerm.atr_stop_multiplier ?? 0.25))}×ATR${atrPeriod}/收盘价)`;
   const maxStopPct = formatRulePercent(shortTerm.max_stop_distance_pct ?? 4);
-  const minTarget1R = Number(shortTerm.min_target1_r || 1.3);
+  const minTarget1R = Number(shortTerm.min_target1_r || shortTerm.min_risk_reward || 1.5);
+  const minRiskReward = Number(shortTerm.min_risk_reward || minTarget1R || 1.5);
   const idealTarget1R = Number(shortTerm.ideal_target1_r || 1.8);
   const target2PullbackR = Number(shortTerm.target2_pullback_r || shortTerm.second_target_r || 2.5);
   const target2BreakoutR = Number(shortTerm.target2_breakout_r || 3);
@@ -5239,6 +5241,7 @@ function CurrentStrategyRuleBook(config) {
   const maxOpenRiskPct = formatRulePercent(shortTerm.max_open_risk_pct ?? 3);
   const themeMaxPct = formatRulePercent(shortTerm.theme_max_position_pct ?? 20);
   const qqqWarningMultiplier = Number(shortTerm.qqq_warning_growth_multiplier ?? 0.5);
+  const lossStreakPauseDays = Number(shortTerm.loss_streak_pause_days || 20);
   const marketWarningMomentum = formatRulePercent(shortTerm.market_warning_momentum_5d_pct ?? -1.5);
   const marketBlockedMomentum = formatRulePercent(shortTerm.market_blocked_momentum_5d_pct ?? -3);
   const minLiquidity = formatRuleMoney(shortTerm.min_avg_dollar_volume_20 ?? 50000000);
@@ -5286,7 +5289,7 @@ function CurrentStrategyRuleBook(config) {
       points: [
         `回踩买入 TP1 可参考近 ${breakoutWindow} 日高点、前高、箱体上沿或关键压力。`,
         `突破买入 TP1 不再使用已突破的 ${breakoutWindow} 日高点，改用更上一级压力位、平台高度、ATR 目标或 R 倍数。`,
-        `TP1 必须至少达到 ${fmt.format(minTarget1R)}R；理想为 ${fmt.format(idealTarget1R)}R，若无明确阻力则按 ${fmt.format(idealTarget1R)}R 推算。`,
+        `TP1 / R:R 必须至少达到 ${fmt.format(minRiskReward)}R；理想为 ${fmt.format(idealTarget1R)}R，若无明确阻力则按 ${fmt.format(idealTarget1R)}R 推算。`,
         `TP2 不固定为 2R：回踩默认 ${fmt.format(target2PullbackR)}R，突破默认 ${fmt.format(target2BreakoutR)}R；到 TP1 后可用移动止盈跟踪。`,
       ],
     },
@@ -5309,7 +5312,7 @@ function CurrentStrategyRuleBook(config) {
         `实际仓位 = min(基础开仓 ${basePositionPct}、单票剩余额度 ${maxSinglePct}、主题/相关性剩余额度 ${themeMaxPct}、单笔风险预算 ${riskPerTradePct} / 止损距离)。`,
         `组合总开放风险默认不超过 ${maxOpenRiskPct}；同一主题或高度相关标的合计仓位不超过 ${themeMaxPct}；ETF/个股模拟仓位仍受 60% / 40% 桶限制。`,
         `QQQ warning 时科技成长股新开仓乘以 ${fmt.format(qqqWarningMultiplier)}，QQQ blocked 时暂停科技成长股新开仓。`,
-        `连续亏损以 realized_r < 0 为准，并分别统计回踩/突破、ETF/个股；连续亏损 2 笔后新开仓减半，3 笔后暂停新开仓。当前股票观察池 ${stockCount} 只。`,
+        `连续亏损以 realized_r < 0 为准，并分别统计回踩/突破、ETF/个股；连续亏损 2 笔后新开仓减半，3 笔后暂停新开仓 ${fmt.format(lossStreakPauseDays)} 个交易日，到期后以 2 连亏状态降仓恢复观察。当前股票观察池 ${stockCount} 只。`,
       ],
     },
   ];
@@ -5418,6 +5421,12 @@ function CurrentStrategyPanel(model) {
       helper: "第一止盈低于该 R 值时不生成建议买入",
     }),
     SettingsSelect({
+      label: "最低 R/R",
+      path: "short_term.min_risk_reward",
+      options: [1.3, 1.5, 1.8, 2].map((value) => ({ value, label: `${value}R` })),
+      helper: "买入信号必须达到的最低风险收益比",
+    }),
+    SettingsSelect({
       label: "TP1 理想 R",
       path: "short_term.ideal_target1_r",
       options: [1.5, 1.8, 2, 2.5, 3].map((value) => ({ value, label: `${value}R` })),
@@ -5488,6 +5497,12 @@ function CurrentStrategyPanel(model) {
       path: "short_term.max_open_risk_pct",
       options: [1, 2, 3, 4, 5].map((value) => ({ value, label: `${value}%` })),
       helper: "所有持仓到止损位的潜在亏损总和上限",
+    }),
+    SettingsSelect({
+      label: "连亏暂停天数",
+      path: "short_term.loss_streak_pause_days",
+      options: [10, 15, 20, 30].map((value) => ({ value, label: `${value}D` })),
+      helper: "连续亏损 3 笔后暂停新开仓，到期后降仓恢复观察",
     }),
     SettingsSelect({
       label: "主题仓位上限",

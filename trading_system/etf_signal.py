@@ -401,9 +401,9 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
         "atr_support_multiplier": 0.20,
         "volume_multiplier": 1.2,
         "max_stop_distance_pct": 4.0,
-        "min_target1_r": 1.3,
+        "min_target1_r": 1.5,
         "ideal_target1_r": 1.8,
-        "min_risk_reward": 1.3,
+        "min_risk_reward": 1.5,
         "target2_pullback_r": 2.5,
         "target2_breakout_r": 3.0,
         "target2_trailing_stop": True,
@@ -427,6 +427,7 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
         "time_stop_mfe_r": 0.8,
         "time_stop_tp1_days": 10,
         "max_holding_days": 14,
+        "loss_streak_pause_days": 20,
         "event_risk_default": "unknown",
     }
     defaults.update(config.get("short_term") or {})
@@ -649,7 +650,7 @@ def build_short_term_analysis(
     risk_per_share = entry_price - stop_price if stop_price is not None else None
     stop_distance_pct = risk_per_share / entry_price * 100 if risk_per_share and risk_per_share > 0 else None
 
-    trigger = "pullback" if pullback_setup else "breakout" if breakout_setup else None
+    trigger = "breakout" if breakout_setup else "pullback" if pullback_setup else None
     platform_height = (
         breakout_level - platform_low
         if breakout_level is not None and platform_low is not None and breakout_level > platform_low
@@ -672,7 +673,8 @@ def build_short_term_analysis(
             target_candidates.append(("atr_expansion_target", entry_price + atr_value * float(rules["trailing_stop_atr_multiplier"])))
     if risk_per_share and risk_per_share > 0:
         target_candidates.append(("risk_multiple", entry_price + risk_per_share * float(rules["ideal_target1_r"])))
-    min_target_price = entry_price + risk_per_share * float(rules["min_target1_r"]) if risk_per_share and risk_per_share > 0 else None
+    min_rr = max(float(rules["min_target1_r"]), float(rules["min_risk_reward"]))
+    min_target_price = entry_price + risk_per_share * min_rr if risk_per_share and risk_per_share > 0 else None
     valid_targets = [
         (label, value)
         for label, value in target_candidates
@@ -766,7 +768,7 @@ def build_short_term_analysis(
     price_above_sma20 = bool(sma20 is not None and latest.close > sma20)
     sma20_flat_or_up = bool(sma20_slope_pct_3d is not None and sma20_slope_pct_3d >= float(rules["sma20_flat_slope_pct_3d"]))
     stop_distance_ok = bool(stop_distance_pct is not None and stop_distance_pct <= float(rules["max_stop_distance_pct"]))
-    risk_reward_ok = bool(risk_reward is not None and risk_reward >= float(rules["min_target1_r"]))
+    risk_reward_ok = bool(risk_reward is not None and risk_reward >= float(rules["min_risk_reward"]))
     checks = [
         (asset_eligible, "现金类资产不参与短线买入"),
         (liquidity_ok, "20 日均成交额低于流动性门槛"),
@@ -776,14 +778,14 @@ def build_short_term_analysis(
         (pullback_setup or breakout_setup, "未触发回踩站稳或有效突破"),
         (stop_price is not None, "缺少可用技术止损位"),
         (stop_distance_ok, "止损距离过远"),
-        (risk_reward_ok, "风险收益比低于 1:1.8"),
+        (risk_reward_ok, "风险收益比低于 1.5R"),
     ]
     for ok, reason in checks:
         if not ok:
             reject_reasons.append(reason)
     reject_reasons = [reason for reason in reject_reasons if "1:1.8" not in reason]
     if not risk_reward_ok:
-        reject_reasons.append("第一止盈低于 1.3R")
+        reject_reasons.append("第一止盈低于 1.5R")
     if position_too_small:
         reject_reasons.append("按风险反推的实际仓位低于 1%")
     if not event_risk_ok:
