@@ -68,6 +68,7 @@ CAUTION_OPEN_RISK_LIMIT = 0.04
 DEFENSIVE_OPEN_RISK_LIMIT = 0.02
 NORMAL_INITIAL_RISK_LIMIT = 0.008
 NORMAL_POSITION_RISK_LIMIT = 0.012
+MAX_STOCK_STOP_DISTANCE_PCT = 0.08
 CAUTION_INITIAL_RISK_LIMIT = 0.004
 CAUTION_POSITION_RISK_LIMIT = 0.006
 
@@ -450,12 +451,14 @@ class StrategyBacktester:
                 position_id = self.find_position_id(order.symbol, order.sleeve)
                 if position_id is None:
                     continue
+                position = self.positions[position_id]
                 price = raw_open * (1 - SLIPPAGE_PCT) * (1 - FEE_PCT)
+                reason = self.pending_exit_reason(position, raw_open, order.reason)
                 self.close_position(
                     position_id=position_id,
                     date_value=date_value,
                     price=price,
-                    reason=order.reason,
+                    reason=reason,
                     market_regime=regime,
                     sell_fraction=order.sell_fraction,
                     exit_signal_date=order.signal_date,
@@ -483,7 +486,7 @@ class StrategyBacktester:
                 position_id=position_id,
                 date_value=date_value,
                 price=price,
-                reason=self.stop_reason(position),
+                reason=self.stop_reason(position, raw_open),
                 market_regime=regime,
                 sell_fraction=1.0,
                 exit_signal_date=date_value,
@@ -585,12 +588,22 @@ class StrategyBacktester:
         )
 
     @staticmethod
-    def stop_reason(position: Position) -> str:
+    def stop_reason(position: Position, raw_open: float | None = None) -> str:
+        stop = position.trailing_stop if position.is_runner else position.effective_stop
+        is_gap = raw_open is not None and stop > 0 and raw_open <= stop
         if position.is_runner:
-            return "runner_trailing_stop"
+            return "runner_gap_stop" if is_gap else "runner_trailing_stop"
         if position.sleeve == "etf_tactical":
-            return "etf_tactical_stop"
-        return "stop_loss"
+            return "etf_tactical_gap_stop" if is_gap else "etf_tactical_stop"
+        return "gap_stop_loss" if is_gap else "stop_loss"
+
+    def pending_exit_reason(self, position: Position, raw_open: float, fallback: str) -> str:
+        if position.sleeve not in {"stock", "etf_tactical"}:
+            return fallback
+        stop = position.trailing_stop if position.is_runner else position.effective_stop
+        if stop > 0 and raw_open <= stop:
+            return self.stop_reason(position, raw_open)
+        return fallback
 
     def add_to_position(self, order: PendingOrder, date_value: dt.date, raw_open: float, regime: str) -> None:
         position_id = self.find_position_id(order.symbol, "stock")
@@ -1146,6 +1159,8 @@ class StrategyBacktester:
         risk_per_share_pct = (entry_price - stop) / entry_price
         if risk_per_share_pct <= 0:
             return 0.0
+        if risk_per_share_pct > MAX_STOCK_STOP_DISTANCE_PCT:
+            return 0.0
         single_risk_allowed_pct = rules["initial_risk_limit"] / risk_per_share_pct
         remaining_total_risk = max(0.0, rules["open_risk_limit"] - self.stock_open_risk_pct(date_value))
         total_risk_allowed_pct = remaining_total_risk / risk_per_share_pct
@@ -1172,6 +1187,8 @@ class StrategyBacktester:
             predicted_stop = max(position.initial_stop, position.base_entry_price, clean_float(row.get("sma20")) if row is not None else 0.0)
         risk_per_share_pct = (entry_price - predicted_stop) / entry_price
         if risk_per_share_pct <= 0:
+            return 0.0
+        if risk_per_share_pct > MAX_STOCK_STOP_DISTANCE_PCT:
             return 0.0
         equity = self.current_equity(date_value)
         current_risk = position.open_risk_pct(equity, self.close_price(position.symbol, date_value))
@@ -1301,8 +1318,8 @@ class StrategyBacktester:
     def scenario_name(self) -> str:
         stock_cap = round(self.stock_sleeve_normal_pct * 100)
         if stock_cap == round(STOCK_SLEEVE_NORMAL * 100):
-            return "candidate-v2.1-tactical-chase-stops"
-        return f"candidate-v2.1-stock-sleeve-normal-{stock_cap}-tactical-chase-stops"
+            return "candidate-v2.1-stop8-gap-tactical-chase-stops"
+        return f"candidate-v2.1-stock-sleeve-normal-{stock_cap}-stop8-gap-tactical-chase-stops"
 
 
 def build_summary(initial_capital: float, trades: list[dict[str, Any]], equity_rows: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1364,6 +1381,7 @@ def strategy_rules() -> dict[str, Any]:
             "add1_pct": 4,
             "add2_pct": 5,
             "single_stock_cap_pct": 15,
+            "max_initial_stop_distance_pct": MAX_STOCK_STOP_DISTANCE_PCT * 100,
             "max_names": 6,
             "max_runner_names": 4,
             "tp1": "1.5R",
