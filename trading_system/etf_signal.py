@@ -325,6 +325,7 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
         "breakout_window_days": 14,
         "pullback_lookback_days": 5,
         "near_support_pct": 1.0,
+        "support_near_atr_multiplier": 0.5,
         "pullback_volume_floor_pct": 80.0,
         "atr_period": 14,
         "min_breakout_buffer_pct": 0.3,
@@ -338,12 +339,24 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
         "min_target1_r": 1.3,
         "ideal_target1_r": 1.8,
         "min_risk_reward": 1.3,
-        "second_target_r": 2.0,
+        "target2_pullback_r": 2.5,
+        "target2_breakout_r": 3.0,
+        "target2_trailing_stop": True,
+        "trailing_stop_atr_multiplier": 1.5,
+        "second_target_r": 2.5,
         "risk_per_trade_pct": 1.0,
         "base_position_pct": 5.0,
         "max_single_position_pct": 15.0,
         "min_position_pct": 1.0,
         "max_open_risk_pct": 3.0,
+        "market_warning_momentum_5d_pct": -1.5,
+        "market_blocked_momentum_5d_pct": -3.0,
+        "individual_warning_momentum_5d_pct": -2.0,
+        "individual_blocked_momentum_5d_pct": -4.0,
+        "market_warning_position_multiplier": 0.75,
+        "individual_warning_position_multiplier": 0.5,
+        "qqq_warning_growth_multiplier": 0.5,
+        "theme_max_position_pct": 20.0,
         "weak_momentum_5d_pct": -2.0,
         "time_stop_mfe_days": 5,
         "time_stop_mfe_r": 0.8,
@@ -353,6 +366,81 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
     }
     defaults.update(config.get("short_term") or {})
     return defaults
+
+
+def theme_for_symbol(symbol: str, config: dict[str, Any]) -> str:
+    theme_risk = config.get("theme_risk") if isinstance(config.get("theme_risk"), dict) else {}
+    theme_map = theme_risk.get("theme_map") if isinstance(theme_risk.get("theme_map"), dict) else {}
+    theme = theme_map.get(symbol.upper())
+    return str(theme or "general").strip() or "general"
+
+
+def classify_risk_state(
+    *,
+    close: float,
+    sma20: float | None,
+    sma20_slope_pct_3d: float | None,
+    momentum5: float | None,
+    risk_reasons: list[str],
+    rules: dict[str, Any],
+    market_proxy: bool = False,
+) -> tuple[str, list[str]]:
+    warning_momentum = float(rules["market_warning_momentum_5d_pct"] if market_proxy else rules["individual_warning_momentum_5d_pct"])
+    blocked_momentum = float(rules["market_blocked_momentum_5d_pct"] if market_proxy else rules["individual_blocked_momentum_5d_pct"])
+    slope_floor = float(rules["sma20_flat_slope_pct_3d"])
+    reasons: list[str] = []
+
+    below_sma20 = bool(sma20 is not None and close < sma20)
+    slope_down = bool(sma20_slope_pct_3d is not None and sma20_slope_pct_3d < slope_floor)
+    weak_momentum = bool(momentum5 is not None and momentum5 <= warning_momentum)
+    blocked_momentum_hit = bool(momentum5 is not None and momentum5 <= blocked_momentum)
+
+    hard_reason_set = {"close_below_swing_low", "failed_breakout", "long_bearish_volume"}
+    hard_reasons = [reason for reason in risk_reasons if reason in hard_reason_set]
+
+    if blocked_momentum_hit:
+        reasons.append("5 日动量进入 blocked 区间")
+    if below_sma20 and slope_down:
+        reasons.append("收盘跌破 SMA20 且 SMA20 下行")
+    if hard_reasons and not market_proxy:
+        reasons.append("标的出现结构/放量风险")
+
+    if blocked_momentum_hit or (below_sma20 and slope_down) or (hard_reasons and not market_proxy):
+        return "blocked", reasons
+
+    if below_sma20:
+        reasons.append("收盘低于 SMA20")
+    if slope_down:
+        reasons.append("SMA20 斜率转弱")
+    if weak_momentum:
+        reasons.append("5 日动量转弱")
+    if risk_reasons and not market_proxy:
+        reasons.append("标的存在风险提示")
+
+    if reasons:
+        return "warning", reasons
+    return "normal", []
+
+
+def aggregate_market_risk_state(market_filters: list[Signal]) -> tuple[str, dict[str, dict[str, Any]], list[str]]:
+    if not market_filters:
+        return "blocked", {}, ["SPY/QQQ 市场代理数据缺失"]
+    components: dict[str, dict[str, Any]] = {}
+    reasons: list[str] = []
+    for signal in market_filters:
+        short_term = signal.short_term or {}
+        status = str(short_term.get("market_component_status") or short_term.get("individual_risk_status") or "blocked")
+        component_reasons = short_term.get("market_component_reasons")
+        if not isinstance(component_reasons, list):
+            component_reasons = []
+        components[signal.symbol] = {"status": status, "reasons": component_reasons}
+        if status != "normal":
+            reasons.append(f"{signal.symbol}: {status}")
+    if any(row["status"] == "blocked" for row in components.values()):
+        return "blocked", components, reasons
+    if any(row["status"] == "warning" for row in components.values()):
+        return "warning", components, reasons
+    return "normal", components, []
 
 
 def percent_change(current: float | None, prior: float | None) -> float | None:
@@ -415,6 +503,10 @@ def build_short_term_analysis(
         float(rules["min_support_confirm_buffer_pct"]),
         float(rules["atr_support_multiplier"]) * atr_pct,
     ) if atr_pct is not None else float(rules["min_support_confirm_buffer_pct"])
+    support_near_pct = max(
+        float(rules["near_support_pct"]),
+        float(rules["support_near_atr_multiplier"]) * atr_pct,
+    ) if atr_pct is not None else float(rules["near_support_pct"])
     prior_sma20 = statistics.fmean(closes[-23:-3]) if len(closes) >= 23 else None
     sma20_slope_pct_3d = percent_change(sma20, prior_sma20)
     recent_low = safe_min(lows[-lookback:])
@@ -435,7 +527,7 @@ def build_short_term_analysis(
         support_touch_indices = [
             idx
             for idx in range(start_index, len(bars))
-            if abs(bars[idx].low - support_base) / support_base * 100 <= float(rules["near_support_pct"])
+            if abs(bars[idx].low - support_base) / support_base * 100 <= support_near_pct
         ]
     recent_touch_support = bool(support_touch_indices)
     volume_floor_pct = float(rules["pullback_volume_floor_pct"])
@@ -485,22 +577,46 @@ def build_short_term_analysis(
     risk_per_share = entry_price - stop_price if stop_price is not None else None
     stop_distance_pct = risk_per_share / entry_price * 100 if risk_per_share and risk_per_share > 0 else None
 
-    target_candidates = [
-        value
-        for value in [breakout_level, prior_target_high]
-        if value is not None and value > entry_price
+    trigger = "pullback" if pullback_setup else "breakout" if breakout_setup else None
+    platform_height = (
+        breakout_level - platform_low
+        if breakout_level is not None and platform_low is not None and breakout_level > platform_low
+        else None
+    )
+    target_candidates: list[tuple[str, float]] = []
+    if trigger == "pullback":
+        for label, value in [
+            ("14d_high_or_platform_resistance", breakout_level),
+            ("higher_prior_resistance", prior_target_high),
+        ]:
+            if value is not None and value > entry_price:
+                target_candidates.append((label, value))
+    elif trigger == "breakout":
+        if prior_target_high is not None and prior_target_high > entry_price:
+            target_candidates.append(("higher_prior_resistance", prior_target_high))
+        if platform_height is not None and platform_height > 0:
+            target_candidates.append(("measured_platform_height", entry_price + platform_height))
+        if atr_value is not None and atr_value > 0:
+            target_candidates.append(("atr_expansion_target", entry_price + atr_value * float(rules["trailing_stop_atr_multiplier"])))
+    if risk_per_share and risk_per_share > 0:
+        target_candidates.append(("risk_multiple", entry_price + risk_per_share * float(rules["ideal_target1_r"])))
+    min_target_price = entry_price + risk_per_share * float(rules["min_target1_r"]) if risk_per_share and risk_per_share > 0 else None
+    valid_targets = [
+        (label, value)
+        for label, value in target_candidates
+        if value > entry_price and (min_target_price is None or value >= min_target_price)
     ]
-    target_source = None
-    if target_candidates:
-        technical_target = min(target_candidates)
-        target_price = technical_target
-        target_source = "technical_resistance"
+    if valid_targets:
+        target_source, target_price = min(valid_targets, key=lambda row: row[1])
     elif risk_per_share and risk_per_share > 0:
         target_price = entry_price + risk_per_share * float(rules["ideal_target1_r"])
-        target_source = "risk_reward"
+        target_source = "risk_multiple"
     else:
         target_price = None
-    target2_price = entry_price + risk_per_share * float(rules["second_target_r"]) if risk_per_share and risk_per_share > 0 else None
+        target_source = None
+    target2_r_config = float(rules["target2_breakout_r"] if trigger == "breakout" else rules["target2_pullback_r"])
+    target2_style = "trailing_after_tp1" if rules.get("target2_trailing_stop", True) else "fixed_r_multiple"
+    target2_price = entry_price + risk_per_share * target2_r_config if risk_per_share and risk_per_share > 0 else None
     target1_r = (target_price - entry_price) / risk_per_share if target_price and risk_per_share and risk_per_share > 0 else None
     target2_r = (target2_price - entry_price) / risk_per_share if target2_price and risk_per_share and risk_per_share > 0 else None
     risk_reward = target1_r
@@ -525,33 +641,46 @@ def build_short_term_analysis(
         if value is not None and value > 0
     ]
     position_pct = min(position_pct_candidates) if position_pct_candidates else None
-    position_too_small = bool(position_pct is not None and position_pct < float(rules["min_position_pct"]))
 
     momentum5 = rate_of_change(closes, 5)
-    sell_reasons: list[str] = []
-    if stop_price is not None and latest.close < stop_price:
-        sell_reasons.append("跌破短线止损位")
-    if sma20 is not None and latest.close < sma20:
-        sell_reasons.append("跌破 SMA20")
-    if prior_low is not None and latest.close < prior_low:
-        sell_reasons.append("跌破近 5 日低点")
-    if failed_breakout:
-        sell_reasons.append("突破失败")
-    if momentum5 is not None and momentum5 <= float(rules["weak_momentum_5d_pct"]):
-        sell_reasons.append("5 日动量明显转弱")
+    individual_risk_status, individual_risk_reasons = classify_risk_state(
+        close=latest.close,
+        sma20=sma20,
+        sma20_slope_pct_3d=sma20_slope_pct_3d,
+        momentum5=momentum5,
+        risk_reasons=risk_reasons,
+        rules=rules,
+        market_proxy=False,
+    )
+    market_component_status, market_component_reasons = classify_risk_state(
+        close=latest.close,
+        sma20=sma20,
+        sma20_slope_pct_3d=sma20_slope_pct_3d,
+        momentum5=momentum5,
+        risk_reasons=[],
+        rules=rules,
+        market_proxy=True,
+    )
+    position_adjustment_multiplier = 1.0
+    if individual_risk_status == "warning":
+        position_adjustment_multiplier *= float(rules["individual_warning_position_multiplier"])
+    if position_pct is not None:
+        position_pct *= position_adjustment_multiplier
+    position_too_small = bool(position_pct is not None and position_pct < float(rules["min_position_pct"]))
 
     hard_exit_reasons: list[str] = []
     soft_exit_reasons: list[str] = []
     if stop_price is not None and latest.close < stop_price:
         hard_exit_reasons.append("跌破初始止损位")
-    if prior_low is not None and latest.close < prior_low:
-        hard_exit_reasons.append("跌破关键结构位")
     if sma20 is not None and latest.close < sma20:
         soft_exit_reasons.append("跌破 SMA20")
+    if prior_low is not None and latest.close < prior_low:
+        soft_exit_reasons.append("跌破近 5 日低点")
     if failed_breakout:
         soft_exit_reasons.append("突破失败")
     if momentum5 is not None and momentum5 <= float(rules["weak_momentum_5d_pct"]):
         soft_exit_reasons.append("5 日动量明显转弱")
+    soft_exit_action = "exit" if len(soft_exit_reasons) >= 2 else "tighten_stop" if len(soft_exit_reasons) == 1 else None
     sell_reasons = hard_exit_reasons + soft_exit_reasons
 
     event_risk_source = config.get("event_risk") if isinstance(config.get("event_risk"), dict) else {}
@@ -561,13 +690,11 @@ def build_short_term_analysis(
     reject_reasons: list[str] = []
     asset_eligible = role != "cash"
     liquidity_ok = bool(avg_dollar_volume20 is not None and avg_dollar_volume20 >= float(rules["min_avg_dollar_volume_20"]))
-    own_risk_ok = not risk_reasons
+    own_risk_ok = individual_risk_status != "blocked"
     price_above_sma20 = bool(sma20 is not None and latest.close > sma20)
     sma20_flat_or_up = bool(sma20_slope_pct_3d is not None and sma20_slope_pct_3d >= float(rules["sma20_flat_slope_pct_3d"]))
     stop_distance_ok = bool(stop_distance_pct is not None and stop_distance_pct <= float(rules["max_stop_distance_pct"]))
     risk_reward_ok = bool(risk_reward is not None and risk_reward >= float(rules["min_target1_r"]))
-    trigger = "pullback" if pullback_setup else "breakout" if breakout_setup else None
-
     checks = [
         (asset_eligible, "现金类资产不参与短线买入"),
         (liquidity_ok, "20 日均成交额低于流动性门槛"),
@@ -589,8 +716,10 @@ def build_short_term_analysis(
         reject_reasons.append("按风险反推的实际仓位低于 1%")
     if not event_risk_ok:
         reject_reasons.append("事件风险为 true，暂停新开仓")
+    if individual_risk_status == "blocked":
+        reject_reasons.append("个股风险状态 blocked，暂停新开仓")
     if pullback_base_setup and not pullback_confirmation_ok and not breakout_setup:
-        reject_reasons.append("回踩确认不足：收盘未高于支撑缓冲、无次日支撑确认且量能萎缩")
+        reject_reasons.append("回踩确认不足：收盘未高于动态支撑缓冲，且无次日支撑确认")
 
     confidence_score = 50
     if trigger == "pullback":
@@ -603,6 +732,10 @@ def build_short_term_analysis(
         confidence_score += 12
     if event_risk_status == "unknown":
         confidence_score -= 8
+    if individual_risk_status == "warning":
+        confidence_score -= 12
+    elif individual_risk_status == "blocked":
+        confidence_score -= 25
     if reject_reasons:
         confidence_score -= min(30, len(reject_reasons) * 8)
     confidence_score = max(0, min(100, confidence_score))
@@ -610,6 +743,10 @@ def build_short_term_analysis(
     risk_notes: list[str] = []
     if event_risk_status == "unknown":
         risk_notes.append("事件风险未接入，需人工确认")
+    if individual_risk_status == "warning":
+        risk_notes.append("个股风险为 warning，建议降低仓位或等待确认")
+    if individual_risk_status == "blocked":
+        risk_notes.append("个股风险为 blocked，不生成买入建议")
     if stop_distance_pct is not None and stop_distance_pct > float(rules["max_stop_distance_pct"]):
         risk_notes.append("止损距离过远")
     if position_too_small:
@@ -632,6 +769,7 @@ def build_short_term_analysis(
         "pullback_volume_ok": pullback_volume_ok,
         "pullback_reclaim_buffer_pct": support_confirm_buffer_pct,
         "support_confirm_buffer_pct": support_confirm_buffer_pct,
+        "support_near_pct": support_near_pct,
         "pullback_volume_floor_pct": volume_floor_pct,
         "breakout_setup": breakout_setup,
         "breakout_price_confirmed": breakout_price_confirmed,
@@ -656,6 +794,10 @@ def build_short_term_analysis(
         "target1_r": target1_r,
         "target2_r": target2_r,
         "target_source": target_source,
+        "target2_style": target2_style,
+        "target2_trailing_stop": bool(rules.get("target2_trailing_stop", True)),
+        "trailing_stop_atr_multiplier": float(rules["trailing_stop_atr_multiplier"]),
+        "platform_height": platform_height,
         "risk_reward": risk_reward,
         "risk_reward_valid": risk_reward_ok,
         "risk_per_trade_pct": float(rules["risk_per_trade_pct"]),
@@ -663,6 +805,7 @@ def build_short_term_analysis(
         "max_single_position_pct": float(rules["max_single_position_pct"]),
         "risk_position_pct": risk_position_pct,
         "position_pct": position_pct,
+        "position_adjustment_multiplier": position_adjustment_multiplier,
         "position_too_small": position_too_small,
         "min_position_pct": float(rules["min_position_pct"]),
         "max_open_risk_pct": float(rules["max_open_risk_pct"]),
@@ -677,9 +820,16 @@ def build_short_term_analysis(
         "sell_reasons": sell_reasons,
         "hard_exit_reasons": hard_exit_reasons,
         "soft_exit_reasons": soft_exit_reasons,
-        "exit_signal_level": "hard_exit" if hard_exit_reasons else "soft_exit" if soft_exit_reasons else None,
-        "sell_signal": bool(sell_reasons),
+        "soft_exit_action": soft_exit_action,
+        "exit_signal_level": "hard_exit" if hard_exit_reasons else "soft_exit" if len(soft_exit_reasons) >= 2 else "soft_warning" if soft_exit_reasons else None,
+        "sell_signal": bool(hard_exit_reasons or len(soft_exit_reasons) >= 2),
         "event_risk_status": event_risk_status,
+        "individual_risk_status": individual_risk_status,
+        "individual_risk_reasons": individual_risk_reasons,
+        "market_component_status": market_component_status,
+        "market_component_reasons": market_component_reasons,
+        "theme": theme_for_symbol(symbol, config),
+        "theme_max_position_pct": float(rules["theme_max_position_pct"]),
         "confidence_score": confidence_score,
         "key_reasons": [reason for reason in [
             "价格在 SMA20 上方" if price_above_sma20 else None,
@@ -702,15 +852,43 @@ def build_short_term_analysis(
 def finalize_short_term_signals(signals: dict[str, Signal], config: dict[str, Any]) -> None:
     market_symbols = config.get("universe", {}).get("market_filters", [])
     market_filters = [signals[symbol] for symbol in market_symbols if symbol in signals]
-    market_ok = bool(market_filters) and all(signal.trend_ok and not signal.risk_signal for signal in market_filters)
+    rules = short_term_rules(config)
+    market_risk_status, market_components, market_reasons = aggregate_market_risk_state(market_filters)
+    market_ok = market_risk_status != "blocked"
+    qqq_status = str(market_components.get("QQQ", {}).get("status") or "normal")
+    theme_risk = config.get("theme_risk") if isinstance(config.get("theme_risk"), dict) else {}
+    qqq_proxy_theme = str(theme_risk.get("qqq_proxy_theme") or "tech_growth")
 
     for signal in signals.values():
         if not signal.short_term:
             continue
         short_term = signal.short_term
         short_term["market_ok"] = market_ok
-        if not market_ok and "大盘代理 SPY/QQQ 存在风险或数据缺失" not in short_term["reject_reasons"]:
-            short_term["reject_reasons"].append("大盘代理 SPY/QQQ 存在风险或数据缺失")
+        short_term["market_risk_status"] = market_risk_status
+        short_term["market_component_statuses"] = market_components
+        short_term["market_risk_reasons"] = market_reasons
+        if market_risk_status == "blocked" and "大盘风险 blocked，暂停新开仓" not in short_term["reject_reasons"]:
+            short_term["reject_reasons"].append("大盘风险 blocked，暂停新开仓")
+        if market_risk_status == "warning":
+            short_term["risk_notes"].append("大盘风险 warning，新开仓按规则降仓")
+            short_term["confidence_score"] = max(0, float(short_term.get("confidence_score") or 0) - 10)
+            if short_term.get("position_pct") is not None:
+                short_term["position_pct"] = float(short_term["position_pct"]) * float(rules["market_warning_position_multiplier"])
+                short_term["position_adjustment_multiplier"] = float(short_term.get("position_adjustment_multiplier") or 1.0) * float(rules["market_warning_position_multiplier"])
+        if str(short_term.get("theme") or "") == qqq_proxy_theme:
+            if qqq_status == "blocked":
+                short_term["reject_reasons"].append("QQQ blocked，暂停科技成长主题新开仓")
+            elif qqq_status == "warning":
+                short_term["risk_notes"].append("QQQ warning，科技成长主题新开仓减半")
+                if short_term.get("position_pct") is not None:
+                    short_term["position_pct"] = float(short_term["position_pct"]) * float(rules["qqq_warning_growth_multiplier"])
+                    short_term["position_adjustment_multiplier"] = float(short_term.get("position_adjustment_multiplier") or 1.0) * float(rules["qqq_warning_growth_multiplier"])
+        short_term["position_too_small"] = bool(
+            short_term.get("position_pct") is not None
+            and float(short_term["position_pct"]) < float(rules["min_position_pct"])
+        )
+        if short_term["position_too_small"] and "按风险反推的实际仓位低于 1%" not in short_term["reject_reasons"]:
+            short_term["reject_reasons"].append("按风险反推的实际仓位低于 1%")
         preconditions_ok = all(
             [
                 short_term["asset_eligible"],
@@ -728,6 +906,8 @@ def finalize_short_term_signals(signals: dict[str, Signal], config: dict[str, An
             and short_term["risk_reward_ok"]
             and not short_term.get("position_too_small")
             and str(short_term.get("event_risk_status") or "").lower() not in {"true", "yes", "1", "high", "blocked"}
+            and str(short_term.get("individual_risk_status") or "").lower() != "blocked"
+            and not (str(short_term.get("theme") or "") == qqq_proxy_theme and qqq_status == "blocked")
         )
         short_term["recommended"] = "yes" if short_term["buy_signal"] else "no"
         short_term["rejection_reason"] = "；".join(short_term.get("reject_reasons", [])[:4])

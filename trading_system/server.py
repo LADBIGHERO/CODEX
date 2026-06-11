@@ -82,6 +82,7 @@ EDITABLE_CONFIG_PATHS = {
     "short_term.breakout_window_days",
     "short_term.pullback_lookback_days",
     "short_term.near_support_pct",
+    "short_term.support_near_atr_multiplier",
     "short_term.atr_period",
     "short_term.min_breakout_buffer_pct",
     "short_term.min_stop_buffer_pct",
@@ -93,6 +94,9 @@ EDITABLE_CONFIG_PATHS = {
     "short_term.max_stop_distance_pct",
     "short_term.min_target1_r",
     "short_term.ideal_target1_r",
+    "short_term.target2_pullback_r",
+    "short_term.target2_breakout_r",
+    "short_term.trailing_stop_atr_multiplier",
     "short_term.min_risk_reward",
     "short_term.second_target_r",
     "short_term.risk_per_trade_pct",
@@ -100,6 +104,10 @@ EDITABLE_CONFIG_PATHS = {
     "short_term.max_single_position_pct",
     "short_term.min_position_pct",
     "short_term.max_open_risk_pct",
+    "short_term.theme_max_position_pct",
+    "short_term.market_warning_position_multiplier",
+    "short_term.individual_warning_position_multiplier",
+    "short_term.qqq_warning_growth_multiplier",
     "short_term.weak_momentum_5d_pct",
     "short_term.time_stop_mfe_days",
     "short_term.time_stop_mfe_r",
@@ -196,7 +204,12 @@ def empty_paper_account_config(initial_cash: float = DEFAULT_PAPER_CASH_USDT) ->
         "trades": [],
         "equityCurve": [],
         "processedSignals": [],
-        "risk": {"lossStreak": 0, "entryPaused": False},
+        "risk": {
+            "lossStreak": 0,
+            "lossStreakByEntryType": {},
+            "lossStreakByAssetType": {},
+            "entryPaused": False,
+        },
         "lastRunAt": None,
         "lastRunLog": [],
         "createdAt": now,
@@ -373,6 +386,7 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
                 "target2R": clean_float(raw_entry.get("target2R"), 0.0, 0.0) or None,
                 "maxFavorableR": clean_float(raw_entry.get("maxFavorableR"), 0.0),
                 "maxAdverseR": clean_float(raw_entry.get("maxAdverseR"), 0.0),
+                "theme": str(raw_entry.get("theme") or "general")[:60],
             }
             for key in ("openedAt", "openedDate", "openedSignalId", "source", "trigger", "entryType"):
                 value = raw_entry.get(key)
@@ -407,6 +421,7 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
                     "closesPosition": bool(raw_trade.get("closesPosition")),
                     "assetType": str(raw_trade.get("assetType") or "")[:24],
                     "entryType": str(raw_trade.get("entryType") or "")[:40],
+                    "theme": str(raw_trade.get("theme") or "")[:60],
                     "stopPrice": clean_float(raw_trade.get("stopPrice"), 0.0, 0.0) or None,
                     "stopDistancePct": clean_float(raw_trade.get("stopDistancePct"), 0.0, 0.0) or None,
                     "positionPct": clean_float(raw_trade.get("positionPct"), 0.0, 0.0) or None,
@@ -424,6 +439,8 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
                     "volumeConfirmed": bool(raw_trade.get("volumeConfirmed")),
                     "planFollowed": raw_trade.get("planFollowed") is not False,
                     "slippagePct": clean_float(raw_trade.get("slippagePct"), 0.0, 0.0),
+                    "exitReason": str(raw_trade.get("exitReason") or "")[:60],
+                    "ambiguousIntraday": bool(raw_trade.get("ambiguousIntraday")),
                 }
             )
 
@@ -452,6 +469,18 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
 
     raw_risk = payload.get("risk") if isinstance(payload.get("risk"), dict) else {}
     loss_streak = int(clean_float(raw_risk.get("lossStreak"), 0, 0))
+    loss_streak_by_entry = raw_risk.get("lossStreakByEntryType") if isinstance(raw_risk.get("lossStreakByEntryType"), dict) else {}
+    loss_streak_by_asset = raw_risk.get("lossStreakByAssetType") if isinstance(raw_risk.get("lossStreakByAssetType"), dict) else {}
+    clean_loss_by_entry = {
+        str(key)[:40]: int(clean_float(value, 0, 0))
+        for key, value in loss_streak_by_entry.items()
+        if str(key).strip()
+    }
+    clean_loss_by_asset = {
+        str(key)[:40]: int(clean_float(value, 0, 0))
+        for key, value in loss_streak_by_asset.items()
+        if str(key).strip()
+    }
 
     return {
         "version": PAPER_ACCOUNT_VERSION,
@@ -461,7 +490,12 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
         "trades": trades,
         "equityCurve": equity_curve,
         "processedSignals": processed,
-        "risk": {"lossStreak": loss_streak, "entryPaused": loss_streak >= 3},
+        "risk": {
+            "lossStreak": loss_streak,
+            "lossStreakByEntryType": clean_loss_by_entry,
+            "lossStreakByAssetType": clean_loss_by_asset,
+            "entryPaused": loss_streak >= 3,
+        },
         "lastRunAt": payload.get("lastRunAt") if isinstance(payload.get("lastRunAt"), str) else None,
         "lastRunLog": payload.get("lastRunLog") if isinstance(payload.get("lastRunLog"), list) else [],
         "createdAt": payload.get("createdAt") if isinstance(payload.get("createdAt"), str) else dt.datetime.now(dt.timezone.utc).isoformat(),
@@ -880,6 +914,19 @@ def paper_asset_type_for_position(position: dict[str, object], item: dict[str, o
     return paper_asset_type_for_item(item, fallback)
 
 
+def paper_theme_for_item(item: dict[str, object] | None, fallback: str = "general") -> str:
+    if isinstance(item, dict):
+        short_term = item.get("short_term") if isinstance(item.get("short_term"), dict) else {}
+        theme = str(short_term.get("theme") or item.get("theme") or fallback).strip()
+        return theme or fallback
+    return fallback
+
+
+def paper_theme_for_position(position: dict[str, object], item: dict[str, object] | None = None) -> str:
+    fallback = str(position.get("theme") or "general").strip() or "general"
+    return paper_theme_for_item(item, fallback)
+
+
 def paper_realized_pnl(account: dict[str, object]) -> float:
     trades = account.get("trades")
     if not isinstance(trades, list):
@@ -1021,6 +1068,7 @@ def close_paper_position(
     trade_extra = {
         "assetType": str(position.get("assetType") or ""),
         "entryType": str(position.get("entryType") or position.get("trigger") or ""),
+        "theme": str(position.get("theme") or "general"),
         "stopPrice": clean_float(position.get("stopPrice"), 0.0, 0.0) or None,
         "stopDistancePct": clean_float(position.get("stopDistancePct"), 0.0, 0.0) or None,
         "positionPct": clean_float(position.get("positionPct"), 0.0, 0.0) or None,
@@ -1059,8 +1107,23 @@ def close_paper_position(
         if not isinstance(risk, dict):
             risk = {}
             account["risk"] = risk
+        realized_r_for_streak = realized_r if realized_r is not None else (accrued / initial_risk / sell_quantity if initial_risk > 0 and sell_quantity > 0 else 0)
+        is_r_loss = realized_r_for_streak < 0
         loss_streak = int(clean_float(risk.get("lossStreak"), 0, 0))
-        risk["lossStreak"] = loss_streak + 1 if accrued < 0 else 0
+        risk["lossStreak"] = loss_streak + 1 if is_r_loss else 0
+        entry_type = str(position.get("entryType") or position.get("trigger") or "unknown")
+        asset_type = str(position.get("assetType") or "unknown")
+        by_entry = risk.setdefault("lossStreakByEntryType", {})
+        if not isinstance(by_entry, dict):
+            by_entry = {}
+            risk["lossStreakByEntryType"] = by_entry
+        by_asset = risk.setdefault("lossStreakByAssetType", {})
+        if not isinstance(by_asset, dict):
+            by_asset = {}
+            risk["lossStreakByAssetType"] = by_asset
+        by_entry[entry_type] = int(clean_float(by_entry.get(entry_type), 0, 0)) + 1 if is_r_loss else 0
+        by_asset[asset_type] = int(clean_float(by_asset.get(asset_type), 0, 0)) + 1 if is_r_loss else 0
+        risk["lastRealizedR"] = realized_r_for_streak
         risk["entryPaused"] = risk["lossStreak"] >= 3
     else:
         position["quantity"] = remaining
@@ -1138,6 +1201,9 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
         trade = None
         intraday_stop_hit = stop_price > 0 and (price <= stop_price or daily_low <= stop_price)
         close_stop_hit = stop_price > 0 and price <= stop_price
+        target1_hit = target_price > 0 and (price >= target_price or daily_high >= target_price)
+        target2_hit = target2_price > 0 and (price >= target2_price or daily_high >= target2_price)
+        ambiguous_intraday = bool(intraday_stop_hit and (target1_hit or target2_hit))
         if intraday_stop_hit if stop_execution_mode == "intraday_stop" else close_stop_hit:
             slipped_stop = stop_price * (1 - slippage_pct / 100)
             exit_price = price if stop_execution_mode == "close_confirm_stop" else min(price, slipped_stop)
@@ -1151,23 +1217,37 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
                 "触发短线硬止损",
                 signal_id,
                 executed_at,
-                {"exitReason": "hard_stop", "slippagePct": slippage_pct},
+                {"exitReason": "hard_stop", "slippagePct": slippage_pct, "ambiguousIntraday": ambiguous_intraday},
             )
         if trade is None and stop_price > 0 and price <= stop_price:
             trade = close_paper_position(account, position, quantity, price, "触发短线止损", signal_id, executed_at)
-        elif trade is None and target2_price > 0 and price >= target2_price:
-            trade = close_paper_position(account, position, quantity, price, "到达第二止盈", signal_id, executed_at)
-        elif trade is None and target_price > 0 and price >= target_price and not position.get("partialTaken"):
-            trade = close_paper_position(account, position, quantity * 0.5, price, "到达第一止盈，卖出一半", signal_id, executed_at)
+        elif trade is None and target2_hit:
+            trade = close_paper_position(account, position, quantity, max(price, target2_price), "到达第二止盈", signal_id, executed_at)
+        elif trade is None and target1_hit and not position.get("partialTaken"):
+            trade = close_paper_position(account, position, quantity * 0.5, max(price, target_price), "到达第一止盈，卖出一半", signal_id, executed_at)
             if str(symbol).upper() in positions:
                 position["partialTaken"] = True
-                position["stopPrice"] = max(stop_price, clean_float(position.get("avgCostUsdt"), 0.0, 0.0))
+                trail_by_atr = clean_float(short_term.get("atr"), 0.0, 0.0) * clean_float(short_term.get("trailing_stop_atr_multiplier"), 1.5, 0.0)
+                trailing_stop = price - trail_by_atr if trail_by_atr > 0 else 0
+                position["stopPrice"] = max(stop_price, clean_float(position.get("avgCostUsdt"), 0.0, 0.0), trailing_stop)
         elif trade is None and short_term.get("sell_signal"):
             sell_reasons = short_term.get("sell_reasons")
             if not isinstance(sell_reasons, list):
                 sell_reasons = []
             reason = "、".join(str(item) for item in sell_reasons[:3]) or "短线卖出信号"
             trade = close_paper_position(account, position, quantity, price, reason, signal_id, executed_at)
+        elif trade is None and short_term.get("soft_exit_action") == "tighten_stop":
+            tightened_stop = max(stop_price, min(price, entry_price))
+            if tightened_stop > stop_price:
+                position["stopPrice"] = tightened_stop
+            soft_reasons = short_term.get("soft_exit_reasons")
+            if not isinstance(soft_reasons, list):
+                soft_reasons = []
+            run_log.append({
+                "symbol": symbol,
+                "action": "watch",
+                "reason": "单个软退出信号，仅预警并收紧止损：" + "、".join(str(item) for item in soft_reasons[:2]),
+            })
         if not trade:
             holding_days = paper_holding_days(position, executed_at)
             max_favorable_r = clean_float(position.get("maxFavorableR"), 0.0)
@@ -1175,7 +1255,14 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             if holding_days is not None and holding_days >= 14 and not target1_taken:
                 trade = close_paper_position(account, position, quantity, price, "时间止损：持仓超过 14 天未到 TP2", signal_id, executed_at, {"exitReason": "time_stop"})
             elif holding_days is not None and holding_days >= 10 and not target1_taken:
-                trade = close_paper_position(account, position, quantity, price, "时间止损：10 天未到 TP1", signal_id, executed_at, {"exitReason": "time_stop"})
+                structure_broken = bool(short_term.get("soft_exit_action") == "exit" or short_term.get("hard_exit_reasons"))
+                if price < entry_price:
+                    trade = close_paper_position(account, position, quantity, price, "时间止损：10 天未到 TP1 且低于入场价", signal_id, executed_at, {"exitReason": "time_stop"})
+                elif short_term.get("price_above_sma20") and not structure_broken:
+                    position["stopPrice"] = max(stop_price, entry_price)
+                    run_log.append({"symbol": symbol, "action": "watch", "reason": "时间止损预警：10 天未到 TP1，但仍在 SMA20 上方且结构未破，止损上移至不低于成本"})
+                else:
+                    trade = close_paper_position(account, position, quantity, price, "时间止损：10 天未到 TP1 且结构转弱", signal_id, executed_at, {"exitReason": "time_stop"})
             elif holding_days is not None and holding_days >= 5 and max_favorable_r < 0.8:
                 run_log.append({"symbol": symbol, "action": "watch", "reason": "时间止损预警：5 天内最高浮盈未到 0.8R"})
         if trade:
@@ -1225,27 +1312,44 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
         metrics_now = paper_account_metrics(account, snapshot)
         equity = clean_float(metrics_now.get("equityUsdt"), DEFAULT_PAPER_CASH_USDT, 0.0)
         asset_type = paper_asset_type_for_item(item)
+        theme = paper_theme_for_item(item)
+        theme_max_pct = clean_float(short_term.get("theme_max_position_pct"), 20.0, 1.0)
         bucket_target_pct = target_stock_pct if asset_type == "stock" else target_etf_pct
         bucket_value_key = "stockValueUsdt" if asset_type == "stock" else "etfValueUsdt"
         bucket_label = "个股" if asset_type == "stock" else "ETF"
         bucket_current_value = clean_float(metrics_now.get(bucket_value_key), 0.0, 0.0)
         bucket_remaining_value = max(0.0, equity * bucket_target_pct / 100 - bucket_current_value)
         single_remaining_value = max(0.0, equity * max_single_pct / 100)
+        theme_current_value = 0.0
+        for held_symbol, held_position in positions.items():
+            if not isinstance(held_position, dict):
+                continue
+            held_item = by_symbol.get(str(held_symbol).upper())
+            if paper_theme_for_position(held_position, held_item) != theme:
+                continue
+            held_price = paper_price_for_item(held_item) or clean_float(held_position.get("lastPrice"), 0.0, 0.0)
+            theme_current_value += clean_float(held_position.get("quantity"), 0.0, 0.0) * held_price
+        theme_remaining_value = max(0.0, equity * theme_max_pct / 100 - theme_current_value)
         if bucket_remaining_value <= 0:
             run_log.append({"symbol": symbol, "action": "skip", "reason": f"{bucket_label}仓位已达 {bucket_target_pct:g}% 上限"})
             continue
         if single_remaining_value <= 0:
             run_log.append({"symbol": symbol, "action": "skip", "reason": f"单一品种仓位已达 {max_single_pct:g}% 上限"})
             continue
+        if theme_remaining_value <= 0:
+            run_log.append({"symbol": symbol, "action": "skip", "reason": f"{theme} 主题仓位已达 {theme_max_pct:g}% 上限"})
+            continue
         risk_budget = equity * risk_per_trade_pct / 100
         risk_position_value = risk_budget / (stop_distance_pct / 100) * entry_multiplier
         entry_target_value = equity * entry_position_pct / 100 * entry_multiplier
+        signal_position_pct = clean_float(short_term.get("position_pct"), entry_position_pct, 0.0)
+        signal_cap_value = equity * signal_position_pct / 100 if signal_position_pct > 0 else entry_target_value
         current_open_risk_pct = clean_float(metrics_now.get("openRiskPct"), 0.0, 0.0)
         remaining_open_risk_pct = max(0.0, max_open_risk_pct - current_open_risk_pct)
         open_risk_cap_value = equity * remaining_open_risk_pct / 100 / (stop_distance_pct / 100) if stop_distance_pct > 0 else 0.0
         position_value = risk_position_value
         cash = clean_float(account.get("cashUsdt"), 0.0, 0.0)
-        position_value = min(position_value, entry_target_value, cash, bucket_remaining_value, single_remaining_value, open_risk_cap_value)
+        position_value = min(position_value, entry_target_value, signal_cap_value, cash, bucket_remaining_value, single_remaining_value, theme_remaining_value, open_risk_cap_value)
         if position_value <= 0:
             run_log.append({"symbol": symbol, "action": "skip", "reason": "模拟现金不足"})
             continue
@@ -1263,6 +1367,10 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
                 cap_notes.append(f"{bucket_label} {bucket_target_pct:g}% 上限")
             if single_remaining_value <= position_value + 0.01:
                 cap_notes.append(f"单品种 {max_single_pct:g}% 上限")
+            if theme_remaining_value <= position_value + 0.01:
+                cap_notes.append(f"{theme} 主题 {theme_max_pct:g}% 上限")
+            if signal_cap_value <= position_value + 0.01:
+                cap_notes.append("信号风险降仓")
             if open_risk_cap_value <= position_value + 0.01:
                 cap_notes.append(f"组合开放风险 {max_open_risk_pct:g}% 上限")
         buy_reason = f"建议买入信号；基础开仓 {entry_position_pct:g}%"
@@ -1275,6 +1383,7 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
         positions[symbol] = {
             "symbol": symbol,
             "assetType": asset_type,
+            "theme": theme,
             "quantity": quantity,
             "initialQuantity": quantity,
             "entryPrice": price,
@@ -1308,6 +1417,7 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
         trade_extra = {
             "assetType": asset_type,
             "entryType": str(short_term.get("entry_type") or short_term.get("trigger") or ""),
+            "theme": theme,
             "stopPrice": stop_price,
             "stopDistancePct": stop_distance_pct,
             "positionPct": position_pct,
