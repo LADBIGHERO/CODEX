@@ -251,6 +251,17 @@ def save_run_summary(payload: dict[str, Any]) -> Path:
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     path = out_dir / f"{stamp}-{payload.get('scenario', 'run')}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    latest = sorted(out_dir.glob("*.json"), key=lambda item: item.stat().st_mtime, reverse=True)
+    latest = [item for item in latest if item.name != "latest_5.json"][:5]
+    index = [
+        {
+            "path": str(item),
+            "name": item.name,
+            "modifiedAt": dt.datetime.fromtimestamp(item.stat().st_mtime).isoformat(timespec="seconds"),
+        }
+        for item in latest
+    ]
+    (out_dir / "latest_5.json").write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
 
