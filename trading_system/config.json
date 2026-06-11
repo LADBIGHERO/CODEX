@@ -60,6 +60,8 @@
     "breakout_window_days": 14,
     "pullback_lookback_days": 5,
     "near_support_pct": 1.0,
+    "pullback_reclaim_buffer_pct": 0.4,
+    "pullback_volume_floor_pct": 80.0,
     "breakout_buffer_pct": 0.2,
     "volume_multiplier": 1.2,
     "stop_buffer_pct": 0.2,
