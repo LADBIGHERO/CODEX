@@ -18,6 +18,7 @@ import mimetypes
 import os
 import re
 import shutil
+import statistics
 import subprocess
 import sys
 import threading
@@ -27,6 +28,7 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from binance_service import (
@@ -36,7 +38,17 @@ from binance_service import (
     load_local_env,
     test_connection,
 )
-from etf_signal import DEFAULT_CONFIG, DEFAULT_REPORT_DIR, generate_signal_snapshot
+from etf_signal import (
+    DEFAULT_CONFIG,
+    DEFAULT_REPORT_DIR,
+    Bar,
+    analyze_symbol,
+    fetch_yahoo_bars_range,
+    finalize_short_term_signals,
+    generate_signal_snapshot,
+    role_for_symbol,
+    signal_to_dict,
+)
 
 
 APP_ROOT = Path(__file__).resolve().parent
@@ -52,6 +64,7 @@ MAX_PAPER_EQUITY_POINTS = 500
 MAX_PAPER_PROCESSED_SIGNALS = 1000
 MAX_ASSET_POOL_GROUPS = 10
 MAX_ASSET_POOL_GROUP_SYMBOLS = 30
+MAX_BACKTEST_TRADES = 2000
 
 EDITABLE_CONFIG_PATHS = {
     "rules.trend_sma_days",
@@ -171,6 +184,14 @@ def resolve_paper_account_config() -> Path:
 
 def resolve_dashboard_view_cache() -> Path:
     return external_root() / "dashboard_view_cache.json"
+
+
+def resolve_backtest_history_root() -> Path:
+    return external_root() / ".local-data-backup" / "history"
+
+
+def resolve_backtest_cache_path() -> Path:
+    return external_root() / ".local-data-backup" / "backtest_result.json"
 
 
 def empty_asset_pool_config() -> dict[str, object]:
@@ -1454,6 +1475,724 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
     return sanitize_paper_account_config(account) | {"metrics": account["metrics"]}
 
 
+def parse_backtest_date(value: object, default: dt.date) -> dt.date:
+    if isinstance(value, str) and value.strip():
+        try:
+            return dt.date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            return default
+    return default
+
+
+def parse_backtest_datetime(value: object) -> dt.datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        parsed = dt.datetime.fromisoformat(text)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        return parsed.astimezone(dt.timezone.utc)
+    except ValueError:
+        try:
+            return dt.datetime.combine(dt.date.fromisoformat(text[:10]), dt.time(21, 0), tzinfo=dt.timezone.utc)
+        except ValueError:
+            return None
+
+
+def daily_backtest_time(date_value: dt.date) -> dt.datetime:
+    return dt.datetime.combine(date_value, dt.time(21, 0), tzinfo=dt.timezone.utc)
+
+
+def backtest_bars_per_day(interval: str) -> int:
+    return 2 if interval == "4h" else 1
+
+
+def scale_backtest_window(value: object, multiplier: int) -> int:
+    return max(1, int(round(clean_float(value, 1, 1) * multiplier)))
+
+
+def backtest_scaled_config(config: dict[str, object], interval: str) -> dict[str, Any]:
+    scaled: dict[str, Any] = copy.deepcopy(config)
+    multiplier = backtest_bars_per_day(interval)
+    universe = scaled.setdefault("universe", {})
+    if isinstance(universe, dict):
+        market_filters = universe.setdefault("market_filters", [])
+        if isinstance(market_filters, list):
+            for symbol in ("SPY", "QQQ"):
+                if symbol not in market_filters:
+                    market_filters.append(symbol)
+    if multiplier <= 1:
+        short_term = scaled.setdefault("short_term", {})
+        if isinstance(short_term, dict):
+            short_term.setdefault("avg_dollar_volume_bars", 20)
+            short_term.setdefault("sma20_slope_bars", 3)
+        return scaled
+
+    rules = scaled.setdefault("rules", {})
+    if isinstance(rules, dict):
+        for key in ("trend_sma_days", "short_sma_days", "support_sma_days", "momentum_days", "short_momentum_days"):
+            if key in rules:
+                rules[key] = scale_backtest_window(rules[key], multiplier)
+
+    behavior = scaled.setdefault("price_behavior", {})
+    if isinstance(behavior, dict):
+        for key in ("swing_window_days", "breakout_window_days", "breakout_hold_days"):
+            if key in behavior:
+                behavior[key] = scale_backtest_window(behavior[key], multiplier)
+
+    short_term = scaled.setdefault("short_term", {})
+    if isinstance(short_term, dict):
+        for key in ("breakout_window_days", "pullback_lookback_days", "atr_period"):
+            if key in short_term:
+                short_term[key] = scale_backtest_window(short_term[key], multiplier)
+        short_term["avg_dollar_volume_bars"] = 20 * multiplier
+        short_term["sma20_slope_bars"] = 3 * multiplier
+    return scaled
+
+
+def load_local_history_entries(symbol: str, interval: str) -> list[dict[str, object]]:
+    csv_path = resolve_backtest_history_root() / interval / f"{symbol.upper()}.csv"
+    if not csv_path.exists():
+        raise FileNotFoundError(f"缺少本地 {interval} 历史K线文件：{csv_path}")
+    entries: list[dict[str, object]] = []
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if not row:
+                continue
+            raw_time = row.get("Datetime") or row.get("Date") or row.get("datetime") or row.get("date") or row.get("Time")
+            timestamp = parse_backtest_datetime(raw_time)
+            if timestamp is None:
+                continue
+            try:
+                bar = Bar(
+                    date=timestamp.date(),
+                    open=float(row.get("Open") or row.get("open")),
+                    high=float(row.get("High") or row.get("high")),
+                    low=float(row.get("Low") or row.get("low")),
+                    close=float(row.get("Close") or row.get("close")),
+                    volume=float(row.get("Volume") or row.get("volume") or 0),
+                )
+            except (TypeError, ValueError):
+                continue
+            entries.append({"time": timestamp, "bar": bar})
+    return sorted(entries, key=lambda item: item["time"])
+
+
+def load_backtest_history_entries(symbol: str, interval: str, start_date: dt.date, end_date: dt.date) -> list[dict[str, object]]:
+    local_path = resolve_backtest_history_root() / interval / f"{symbol.upper()}.csv"
+    if interval == "4h" or local_path.exists():
+        return load_local_history_entries(symbol, interval)
+    warmup_start = start_date - dt.timedelta(days=460)
+    bars = fetch_yahoo_bars_range(symbol, warmup_start, end_date)
+    return [{"time": daily_backtest_time(bar.date), "bar": bar} for bar in bars]
+
+
+def backtest_entry_time(entry: dict[str, object]) -> dt.datetime:
+    value = entry.get("time")
+    if isinstance(value, dt.datetime):
+        return value
+    return dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+
+
+def backtest_entry_bar(entry: dict[str, object]) -> Bar:
+    value = entry.get("bar")
+    if isinstance(value, Bar):
+        return value
+    raise ValueError("Invalid backtest bar")
+
+
+def backtest_asset_type(symbol: str, item: dict[str, object], asset_pool: dict[str, object]) -> str:
+    instruments = asset_pool.get("instruments") if isinstance(asset_pool, dict) else {}
+    entry = instruments.get(symbol) if isinstance(instruments, dict) else None
+    raw_type = ""
+    if isinstance(entry, dict):
+        raw_type = str(entry.get("type") or entry.get("instrumentType") or "").lower()
+    if "etf" in raw_type:
+        return "etf"
+    return paper_asset_type_for_item(item, "stock" if item.get("role") == "stock" else "etf")
+
+
+def backtest_snapshot_at(
+    *,
+    current_time: dt.datetime,
+    histories: dict[str, list[dict[str, object]]],
+    config: dict[str, Any],
+    symbols: list[str],
+) -> tuple[dict[str, object] | None, dict[str, dict[str, object]]]:
+    signals = {}
+    latest_items: dict[str, dict[str, object]] = {}
+    for symbol in symbols:
+        entries = histories.get(symbol, [])
+        available = [backtest_entry_bar(entry) for entry in entries if backtest_entry_time(entry) <= current_time]
+        if not available:
+            continue
+        try:
+            signal = analyze_symbol(symbol, role_for_symbol(symbol, config), available, config)
+        except Exception:
+            continue
+        signals[symbol] = signal
+
+    if not signals:
+        return None, {}
+    finalize_short_term_signals(signals, config)
+    for symbol, signal in signals.items():
+        entries = histories.get(symbol, [])
+        current_entry = next((entry for entry in reversed(entries) if backtest_entry_time(entry) <= current_time), None)
+        item = signal_to_dict(signal)
+        item["bar_time"] = current_time.isoformat()
+        if current_entry:
+            bar = backtest_entry_bar(current_entry)
+            item["current_price"] = bar.close
+            item["close"] = bar.close
+            short_term = item.get("short_term") if isinstance(item.get("short_term"), dict) else {}
+            short_term["daily_open"] = bar.open
+            short_term["daily_high"] = bar.high
+            short_term["daily_low"] = bar.low
+            short_term["bar_open"] = bar.open
+            short_term["bar_high"] = bar.high
+            short_term["bar_low"] = bar.low
+            item["short_term"] = short_term
+        latest_items[symbol] = item
+
+    latest_date = max(signal.date for signal in signals.values()).isoformat()
+    snapshot = {
+        "generated_at": current_time.isoformat(),
+        "latest_daily_date": latest_date,
+        "symbols": list(latest_items.values()),
+    }
+    return snapshot, latest_items
+
+
+def backtest_position_value(position: dict[str, object], price_value: float | None = None) -> float:
+    price = price_value if price_value and price_value > 0 else clean_float(position.get("lastPrice"), 0.0, 0.0)
+    return clean_float(position.get("quantity"), 0.0, 0.0) * price
+
+
+def backtest_metrics(cash: float, positions: dict[str, dict[str, object]], prices: dict[str, float]) -> dict[str, float]:
+    position_value = 0.0
+    etf_value = 0.0
+    stock_value = 0.0
+    open_risk = 0.0
+    for symbol, position in positions.items():
+        price = prices.get(symbol) or clean_float(position.get("lastPrice"), 0.0, 0.0)
+        value = backtest_position_value(position, price)
+        position_value += value
+        if str(position.get("assetType")) == "stock":
+            stock_value += value
+        else:
+            etf_value += value
+        stop_price = clean_float(position.get("stopPrice"), 0.0, 0.0)
+        quantity = clean_float(position.get("quantity"), 0.0, 0.0)
+        if price > stop_price > 0:
+            open_risk += (price - stop_price) * quantity
+    equity = cash + position_value
+    return {
+        "equity": equity,
+        "positionValue": position_value,
+        "etfValue": etf_value,
+        "stockValue": stock_value,
+        "openRiskPct": open_risk / equity * 100 if equity > 0 else 0.0,
+    }
+
+
+def close_backtest_position(
+    *,
+    positions: dict[str, dict[str, object]],
+    trades: list[dict[str, object]],
+    symbol: str,
+    quantity: float,
+    price_value: float,
+    time_value: dt.datetime,
+    reason: str,
+    extra: dict[str, object] | None = None,
+) -> float:
+    position = positions.get(symbol)
+    if not position:
+        return 0.0
+    held_quantity = clean_float(position.get("quantity"), 0.0, 0.0)
+    sell_quantity = min(quantity, held_quantity)
+    if sell_quantity <= 0:
+        return 0.0
+    entry_price = clean_float(position.get("entryPrice"), 0.0, 0.0)
+    realized = (price_value - entry_price) * sell_quantity
+    initial_risk = clean_float(position.get("initialRiskPerShare"), 0.0, 0.0)
+    realized_r = (price_value - entry_price) / initial_risk if initial_risk > 0 else None
+    remaining = held_quantity - sell_quantity
+    trade = {
+        "time": time_value.isoformat(),
+        "date": time_value.date().isoformat(),
+        "symbol": symbol,
+        "side": "SELL",
+        "action": "卖出",
+        "quantity": sell_quantity,
+        "price": price_value,
+        "valueUsdt": sell_quantity * price_value,
+        "realizedPnlUsdt": realized,
+        "realizedR": realized_r,
+        "reason": reason,
+        "closesPosition": remaining <= 1e-9,
+    }
+    if extra:
+        trade.update(extra)
+    trades.append(trade)
+    if remaining <= 1e-9:
+        positions.pop(symbol, None)
+    else:
+        position["quantity"] = remaining
+        position["realizedPnlUsdt"] = clean_float(position.get("realizedPnlUsdt"), 0.0) + realized
+    return realized
+
+
+def build_backtest_summary(
+    *,
+    equity_curve: list[dict[str, object]],
+    trades: list[dict[str, object]],
+    initial_cash: float,
+    benchmark_return: float | None,
+    bars_per_year: int,
+) -> dict[str, object]:
+    final_equity = clean_float(equity_curve[-1].get("equityUsdt"), initial_cash) if equity_curve else initial_cash
+    total_return = (final_equity / initial_cash - 1) * 100 if initial_cash > 0 else 0.0
+    periods = max(1, len(equity_curve))
+    annual_return = ((final_equity / initial_cash) ** (bars_per_year / periods) - 1) * 100 if initial_cash > 0 and final_equity > 0 else 0.0
+    max_drawdown = max((clean_float(point.get("drawdownPct"), 0.0) for point in equity_curve), default=0.0)
+    returns = []
+    for prev, current in zip(equity_curve, equity_curve[1:]):
+        prev_equity = clean_float(prev.get("equityUsdt"), 0.0, 0.0)
+        current_equity = clean_float(current.get("equityUsdt"), 0.0, 0.0)
+        if prev_equity > 0:
+            returns.append(current_equity / prev_equity - 1)
+    sharpe = None
+    if len(returns) >= 2:
+        stdev = statistics.stdev(returns)
+        if stdev > 0:
+            sharpe = statistics.fmean(returns) / stdev * math.sqrt(bars_per_year)
+    sells = [trade for trade in trades if trade.get("side") == "SELL"]
+    wins = [trade for trade in sells if clean_float(trade.get("realizedPnlUsdt"), 0.0) > 0]
+    losses = [trade for trade in sells if clean_float(trade.get("realizedPnlUsdt"), 0.0) < 0]
+    gross_profit = sum(clean_float(trade.get("realizedPnlUsdt"), 0.0) for trade in wins)
+    gross_loss = abs(sum(clean_float(trade.get("realizedPnlUsdt"), 0.0) for trade in losses))
+    realized_rs = [
+        clean_float(trade.get("realizedR"), 0.0)
+        for trade in sells
+        if trade.get("realizedR") is not None
+    ]
+    return {
+        "initialCashUsdt": initial_cash,
+        "finalEquityUsdt": final_equity,
+        "totalReturnPct": total_return,
+        "annualReturnPct": annual_return,
+        "maxDrawdownPct": max_drawdown,
+        "sharpe": sharpe,
+        "benchmarkReturnPct": benchmark_return,
+        "excessReturnPct": total_return - benchmark_return if benchmark_return is not None else None,
+        "tradeCount": len(trades),
+        "closedTradeCount": len(sells),
+        "winRatePct": len(wins) / len(sells) * 100 if sells else None,
+        "profitFactor": gross_profit / gross_loss if gross_loss > 0 else None,
+        "averageR": statistics.fmean(realized_rs) if realized_rs else None,
+    }
+
+
+def run_strategy_backtest(
+    *,
+    config: dict[str, object],
+    asset_pool: dict[str, object],
+    start_date: dt.date,
+    end_date: dt.date,
+    interval: str,
+    initial_cash: float,
+    requested_symbols: list[str] | None = None,
+) -> dict[str, object]:
+    if end_date < start_date:
+        raise ValueError("结束日期不能早于开始日期")
+    if interval not in {"1d", "4h"}:
+        raise ValueError("回测颗粒度仅支持 1d 或 4h")
+
+    config = copy.deepcopy(config)
+    requested = []
+    if requested_symbols:
+        for value in requested_symbols:
+            symbol = str(value or "").strip().upper()
+            if re.fullmatch(r"[A-Z0-9.\-=]{1,16}", symbol) and symbol not in requested:
+                requested.append(symbol)
+    if requested:
+        universe_for_custom = config.setdefault("universe", {})
+        if isinstance(universe_for_custom, dict):
+            stock_assets = universe_for_custom.setdefault("stock_assets", [])
+            if not isinstance(stock_assets, list):
+                stock_assets = []
+                universe_for_custom["stock_assets"] = stock_assets
+            existing = all_config_symbols(config)
+            for symbol in requested:
+                if symbol not in existing:
+                    stock_assets.append(symbol)
+                    existing.add(symbol)
+
+    config = backtest_scaled_config(config, interval)
+    universe = config.get("universe") if isinstance(config.get("universe"), dict) else {}
+    if requested:
+        symbols = sorted(set(requested) | {"SPY", "QQQ"})
+    else:
+        symbols = sorted(all_config_symbols(config) | {"SPY", "QQQ"})
+    cash_symbols = set(str(x).upper() for x in universe.get("cash_assets", []) if isinstance(universe.get("cash_assets"), list))
+    trade_source = set(requested) if requested else set(symbols)
+    trade_symbols = {symbol for symbol in trade_source if symbol not in cash_symbols}
+    benchmark_symbol = "SPY"
+    histories: dict[str, list[dict[str, object]]] = {}
+    missing: list[dict[str, str]] = []
+    for symbol in symbols:
+        try:
+            entries = load_backtest_history_entries(symbol, interval, start_date, end_date)
+            if not entries:
+                raise RuntimeError("历史K线为空")
+            histories[symbol] = entries
+        except Exception as exc:
+            missing.append({"symbol": symbol, "error": str(exc)})
+
+    if interval == "4h" and missing:
+        return {
+            "status": "missing_data",
+            "missingData": missing,
+            "expectedPath": str((resolve_backtest_history_root() / "4h" / "{SYMBOL}.csv").resolve()),
+            "message": "4h 回测需要本地历史K线 CSV，请补齐缺失文件后重试。",
+        }
+    if benchmark_symbol not in histories:
+        raise RuntimeError("缺少 SPY 基准数据，无法计算回测结果")
+
+    timeline = sorted(
+        {
+            backtest_entry_time(entry)
+            for entries in histories.values()
+            for entry in entries
+            if start_date <= backtest_entry_time(entry).date() <= end_date
+        }
+    )
+    if not timeline:
+        raise RuntimeError("所选区间没有可用K线")
+
+    bar_by_symbol_time: dict[str, dict[dt.datetime, Bar]] = {
+        symbol: {backtest_entry_time(entry): backtest_entry_bar(entry) for entry in entries}
+        for symbol, entries in histories.items()
+    }
+    symbol_times = {symbol: sorted(table.keys()) for symbol, table in bar_by_symbol_time.items()}
+
+    def next_symbol_time(symbol: str, current_time: dt.datetime) -> dt.datetime | None:
+        for item_time in symbol_times.get(symbol, []):
+            if item_time > current_time:
+                return item_time
+        return None
+
+    cash = initial_cash
+    positions: dict[str, dict[str, object]] = {}
+    trades: list[dict[str, object]] = []
+    equity_curve: list[dict[str, object]] = []
+    pending_buys: list[dict[str, object]] = []
+    pending_sells: list[dict[str, object]] = []
+    processed_signal_ids: set[str] = set()
+    loss_streak = 0
+    high_watermark = initial_cash
+    bpd = backtest_bars_per_day(interval)
+    short_rules = config.get("short_term") if isinstance(config.get("short_term"), dict) else {}
+    slippage_pct = clean_float((config.get("execution") or {}).get("slippage_pct") if isinstance(config.get("execution"), dict) else 0.1, 0.1, 0.0)
+    bars_per_year = 252 * bpd
+    current_prices: dict[str, float] = {}
+
+    for index, current_time in enumerate(timeline):
+        current_bars = {
+            symbol: table[current_time]
+            for symbol, table in bar_by_symbol_time.items()
+            if current_time in table
+        }
+        for symbol, bar in current_bars.items():
+            current_prices[symbol] = bar.close
+
+        for order in list(pending_sells):
+            if order["time"] > current_time:
+                continue
+            symbol = str(order["symbol"])
+            bar = current_bars.get(symbol)
+            if not bar or symbol not in positions:
+                continue
+            quantity = clean_float(positions[symbol].get("quantity"), 0.0, 0.0)
+            realized = close_backtest_position(
+                positions=positions,
+                trades=trades,
+                symbol=symbol,
+                quantity=quantity,
+                price_value=bar.open,
+                time_value=current_time,
+                reason=str(order.get("reason") or "建议卖出信号"),
+                extra={"exitReason": order.get("exitReason") or "signal_exit"},
+            )
+            cash += quantity * bar.open
+            realized_r = trades[-1].get("realizedR") if trades else None
+            loss_streak = loss_streak + 1 if realized_r is not None and clean_float(realized_r, 0.0) < 0 else 0
+            pending_sells.remove(order)
+
+        for order in list(pending_buys):
+            if order["time"] > current_time:
+                continue
+            symbol = str(order["symbol"])
+            if symbol in positions:
+                pending_buys.remove(order)
+                continue
+            bar = current_bars.get(symbol)
+            item = order.get("item") if isinstance(order.get("item"), dict) else {}
+            short_term = item.get("short_term") if isinstance(item.get("short_term"), dict) else {}
+            if not bar or not short_term:
+                pending_buys.remove(order)
+                continue
+            entry_price = bar.open
+            stop_price = clean_float(short_term.get("stop_price"), 0.0, 0.0)
+            if stop_price <= 0 or stop_price >= entry_price:
+                pending_buys.remove(order)
+                continue
+            metrics_now = backtest_metrics(cash, positions, current_prices)
+            equity = metrics_now["equity"]
+            stop_distance_pct = (entry_price - stop_price) / entry_price * 100
+            risk_per_trade_pct = clean_float(short_rules.get("risk_per_trade_pct"), 1.0, 0.1)
+            base_position_pct = clean_float(short_rules.get("base_position_pct"), 5.0, 1.0)
+            max_single_pct = clean_float(short_rules.get("max_single_position_pct"), 15.0, 1.0)
+            max_open_risk_pct = clean_float(short_rules.get("max_open_risk_pct"), 3.0, 0.1)
+            theme_max_pct = clean_float(short_term.get("theme_max_position_pct"), clean_float(short_rules.get("theme_max_position_pct"), 20.0, 1.0), 1.0)
+            asset_type = backtest_asset_type(symbol, item, asset_pool)
+            bucket_target_pct = 40.0 if asset_type == "stock" else 60.0
+            bucket_current_value = metrics_now["stockValue"] if asset_type == "stock" else metrics_now["etfValue"]
+            bucket_remaining = max(0.0, equity * bucket_target_pct / 100 - bucket_current_value)
+            single_remaining = max(0.0, equity * max_single_pct / 100)
+            theme = paper_theme_for_item(item)
+            theme_current_value = sum(
+                backtest_position_value(position, current_prices.get(held_symbol))
+                for held_symbol, position in positions.items()
+                if str(position.get("theme") or "general") == theme
+            )
+            theme_remaining = max(0.0, equity * theme_max_pct / 100 - theme_current_value)
+            entry_multiplier = 0.5 if loss_streak >= 2 else 1.0
+            if loss_streak >= 3:
+                pending_buys.remove(order)
+                continue
+            risk_value = equity * risk_per_trade_pct / 100 / (stop_distance_pct / 100) * entry_multiplier
+            base_value = equity * base_position_pct / 100 * entry_multiplier
+            signal_position_pct = clean_float(short_term.get("position_pct"), base_position_pct, 0.0)
+            signal_value = equity * signal_position_pct / 100 if signal_position_pct > 0 else base_value
+            open_risk_remaining = max(0.0, max_open_risk_pct - metrics_now["openRiskPct"])
+            open_risk_value = equity * open_risk_remaining / 100 / (stop_distance_pct / 100) if stop_distance_pct > 0 else 0.0
+            position_value = min(cash, risk_value, base_value, signal_value, bucket_remaining, single_remaining, theme_remaining, open_risk_value)
+            if equity <= 0 or position_value / equity * 100 < 1.0:
+                pending_buys.remove(order)
+                continue
+            quantity = position_value / entry_price
+            cash -= position_value
+            positions[symbol] = {
+                "symbol": symbol,
+                "assetType": asset_type,
+                "theme": theme,
+                "quantity": quantity,
+                "entryPrice": entry_price,
+                "lastPrice": entry_price,
+                "stopPrice": stop_price,
+                "targetPrice": clean_float(short_term.get("target_price"), 0.0, 0.0),
+                "target2Price": clean_float(short_term.get("target2_price"), 0.0, 0.0),
+                "initialRiskPerShare": entry_price - stop_price,
+                "partialTaken": False,
+                "openedAt": current_time.isoformat(),
+                "openedIndex": index,
+                "entryType": str(short_term.get("entry_type") or short_term.get("trigger") or ""),
+                "maxFavorableR": 0.0,
+                "maxAdverseR": 0.0,
+            }
+            trades.append({
+                "time": current_time.isoformat(),
+                "date": current_time.date().isoformat(),
+                "symbol": symbol,
+                "side": "BUY",
+                "action": "买入",
+                "quantity": quantity,
+                "price": entry_price,
+                "valueUsdt": position_value,
+                "realizedPnlUsdt": None,
+                "realizedR": None,
+                "reason": "建议买入信号；下一根K线开盘成交",
+                "entryType": positions[symbol]["entryType"],
+            })
+            pending_buys.remove(order)
+
+        for symbol, position in list(positions.items()):
+            bar = current_bars.get(symbol)
+            if not bar:
+                continue
+            position["lastPrice"] = bar.close
+            entry_price = clean_float(position.get("entryPrice"), 0.0, 0.0)
+            initial_risk = clean_float(position.get("initialRiskPerShare"), 0.0, 0.0)
+            if initial_risk > 0:
+                position["maxFavorableR"] = max(clean_float(position.get("maxFavorableR"), 0.0), (bar.high - entry_price) / initial_risk)
+                position["maxAdverseR"] = min(clean_float(position.get("maxAdverseR"), 0.0), (bar.low - entry_price) / initial_risk)
+            stop_price = clean_float(position.get("stopPrice"), 0.0, 0.0)
+            target1 = clean_float(position.get("targetPrice"), 0.0, 0.0)
+            target2 = clean_float(position.get("target2Price"), 0.0, 0.0)
+            quantity = clean_float(position.get("quantity"), 0.0, 0.0)
+            stop_hit = stop_price > 0 and bar.low <= stop_price
+            target1_hit = target1 > 0 and bar.high >= target1 and not position.get("partialTaken")
+            target2_hit = target2 > 0 and bar.high >= target2
+            ambiguous = bool(stop_hit and (target1_hit or target2_hit))
+            if stop_hit:
+                exit_price = min(bar.open, stop_price * (1 - slippage_pct / 100)) if bar.open < stop_price else stop_price * (1 - slippage_pct / 100)
+                realized = close_backtest_position(
+                    positions=positions,
+                    trades=trades,
+                    symbol=symbol,
+                    quantity=quantity,
+                    price_value=exit_price,
+                    time_value=current_time,
+                    reason="触发短线止损",
+                    extra={"exitReason": "hard_stop", "ambiguous": ambiguous},
+                )
+                cash += quantity * exit_price
+                realized_r = trades[-1].get("realizedR") if trades else None
+                loss_streak = loss_streak + 1 if realized_r is not None and clean_float(realized_r, 0.0) < 0 else 0
+                continue
+            if target2_hit:
+                exit_price = max(target2, bar.open)
+                close_backtest_position(
+                    positions=positions,
+                    trades=trades,
+                    symbol=symbol,
+                    quantity=quantity,
+                    price_value=exit_price,
+                    time_value=current_time,
+                    reason="到达第二止盈",
+                    extra={"exitReason": "target2"},
+                )
+                cash += quantity * exit_price
+                loss_streak = 0
+                continue
+            if target1_hit:
+                sell_quantity = quantity * 0.5
+                exit_price = max(target1, bar.open)
+                close_backtest_position(
+                    positions=positions,
+                    trades=trades,
+                    symbol=symbol,
+                    quantity=sell_quantity,
+                    price_value=exit_price,
+                    time_value=current_time,
+                    reason="到达第一止盈，卖出一半",
+                    extra={"exitReason": "target1"},
+                )
+                cash += sell_quantity * exit_price
+                if symbol in positions:
+                    positions[symbol]["partialTaken"] = True
+                    positions[symbol]["stopPrice"] = max(stop_price, entry_price)
+
+        snapshot, items = backtest_snapshot_at(current_time=current_time, histories=histories, config=config, symbols=symbols)
+        if snapshot and items:
+            for symbol, item in items.items():
+                if symbol not in trade_symbols or symbol in positions:
+                    continue
+                short_term = item.get("short_term") if isinstance(item.get("short_term"), dict) else {}
+                if not short_term.get("buy_signal"):
+                    continue
+                signal_id = f"{current_time.isoformat()}:{symbol}:buy:{short_term.get('trigger')}"
+                if signal_id in processed_signal_ids:
+                    continue
+                execute_time = next_symbol_time(symbol, current_time)
+                if execute_time is None:
+                    continue
+                pending_buys.append({"time": execute_time, "symbol": symbol, "item": item})
+                processed_signal_ids.add(signal_id)
+            for symbol, position in list(positions.items()):
+                item = items.get(symbol)
+                if not item:
+                    continue
+                short_term = item.get("short_term") if isinstance(item.get("short_term"), dict) else {}
+                execute_time = next_symbol_time(symbol, current_time)
+                if execute_time is None:
+                    continue
+                holding_bars = index - int(clean_float(position.get("openedIndex"), index, 0))
+                if short_term.get("sell_signal"):
+                    pending_sells.append({"time": execute_time, "symbol": symbol, "reason": "建议卖出信号", "exitReason": "signal_exit"})
+                elif holding_bars >= int(clean_float(short_rules.get("max_holding_days"), 14, 1)) * bpd:
+                    pending_sells.append({"time": execute_time, "symbol": symbol, "reason": "时间止损：超过最大持仓周期", "exitReason": "time_stop"})
+                elif holding_bars >= int(clean_float(short_rules.get("time_stop_tp1_days"), 10, 1)) * bpd and not position.get("partialTaken"):
+                    if current_prices.get(symbol, 0) < clean_float(position.get("entryPrice"), 0.0, 0.0):
+                        pending_sells.append({"time": execute_time, "symbol": symbol, "reason": "时间止损：未到TP1且低于入场价", "exitReason": "time_stop"})
+                    else:
+                        position["stopPrice"] = max(clean_float(position.get("stopPrice"), 0.0, 0.0), clean_float(position.get("entryPrice"), 0.0, 0.0))
+
+        metrics_now = backtest_metrics(cash, positions, current_prices)
+        high_watermark = max(high_watermark, metrics_now["equity"])
+        equity_curve.append({
+            "time": current_time.isoformat(),
+            "date": current_time.date().isoformat(),
+            "equityUsdt": metrics_now["equity"],
+            "cashUsdt": cash,
+            "positionValueUsdt": metrics_now["positionValue"],
+            "drawdownPct": (high_watermark - metrics_now["equity"]) / high_watermark * 100 if high_watermark > 0 else 0.0,
+        })
+
+    benchmark_entries = [
+        entry for entry in histories.get(benchmark_symbol, [])
+        if start_date <= backtest_entry_time(entry).date() <= end_date
+    ]
+    benchmark_return = None
+    if len(benchmark_entries) >= 2:
+        first_close = backtest_entry_bar(benchmark_entries[0]).close
+        last_close = backtest_entry_bar(benchmark_entries[-1]).close
+        benchmark_return = (last_close / first_close - 1) * 100 if first_close > 0 else None
+    summary = build_backtest_summary(
+        equity_curve=equity_curve,
+        trades=trades,
+        initial_cash=initial_cash,
+        benchmark_return=benchmark_return,
+        bars_per_year=bars_per_year,
+    )
+    result = {
+        "status": "completed",
+        "statusLabel": "已完成",
+        "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "startDate": start_date.isoformat(),
+        "endDate": end_date.isoformat(),
+        "interval": interval,
+        "frequency": "4小时" if interval == "4h" else "日线",
+        "executionModel": "next_open",
+        "benchmarkSymbol": benchmark_symbol,
+        "initialCashUsdt": initial_cash,
+        "summary": summary,
+        "equityCurve": equity_curve,
+        "drawdownCurve": [{"time": row["time"], "date": row["date"], "drawdownPct": row["drawdownPct"]} for row in equity_curve],
+        "annualPerformance": [
+            {
+                "year": str(year),
+                "strategyReturn": (rows[-1]["equityUsdt"] / rows[0]["equityUsdt"] - 1) * 100 if rows[0]["equityUsdt"] else 0,
+                "benchmarkReturn": benchmark_return if str(year) == start_date.strftime("%Y") else None,
+                "excessReturn": summary["excessReturnPct"] if str(year) == start_date.strftime("%Y") else None,
+            }
+            for year, rows in {
+                int(row["date"][:4]): [point for point in equity_curve if int(point["date"][:4]) == int(row["date"][:4])]
+                for row in equity_curve
+            }.items()
+        ],
+        "trades": trades[-MAX_BACKTEST_TRADES:],
+        "diagnostics": {
+            "symbols": symbols,
+            "tradeSymbols": sorted(trade_symbols),
+            "missingData": missing,
+            "notes": [
+                "买入按当前K线收盘信号、下一根K线开盘成交。",
+                "止损/止盈使用K线高低价判断；同K线冲突按保守止损处理。",
+                "4h 回测使用本地 CSV，不调用付费数据源。",
+            ],
+        },
+    }
+    cache_path = resolve_backtest_cache_path()
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
 def detect_tailscale() -> dict[str, str | bool | None]:
     tailscale = shutil.which("tailscale")
     if not tailscale:
@@ -1680,6 +2419,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/paper-account/settings":
             self.handle_paper_account_settings()
             return
+        if parsed.path == "/api/backtest/run":
+            self.handle_backtest_run()
+            return
         if parsed.path == "/api/ui-cache":
             self.handle_ui_cache_post()
             return
@@ -1900,6 +2642,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "server": self.app.status_payload(),
                 }
             )
+        except json.JSONDecodeError as exc:
+            self.send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:
+            self.send_json({"ok": False, "error": str(exc), "server": self.app.status_payload()}, HTTPStatus.BAD_GATEWAY)
+
+    def handle_backtest_run(self) -> None:
+        try:
+            payload = self.read_json_body()
+            today = dt.date.today()
+            start_date = parse_backtest_date(payload.get("startDate") or payload.get("start_date"), dt.date(2023, 1, 1))
+            end_date = parse_backtest_date(payload.get("endDate") or payload.get("end_date"), dt.date(2023, 12, 31))
+            if end_date > today:
+                end_date = today
+            interval = str(payload.get("interval") or "4h").strip().lower()
+            initial_cash = clean_float(payload.get("initialCashUsdt") or payload.get("initial_cash_usdt"), DEFAULT_PAPER_CASH_USDT, 1.0)
+            raw_symbols = payload.get("symbols")
+            requested_symbols: list[str] = []
+            if isinstance(raw_symbols, list):
+                requested_symbols = [str(value or "").strip().upper() for value in raw_symbols]
+            elif isinstance(raw_symbols, str):
+                requested_symbols = [value.strip().upper() for value in re.split(r"[\s,;，；]+", raw_symbols) if value.strip()]
+            with self.app.config_path.open("r", encoding="utf-8") as f:
+                config = json.load(f)
+            asset_pool = self.app.load_asset_pool_config()
+            merged_config = merge_asset_pool_into_config(config, asset_pool)
+            result = run_strategy_backtest(
+                config=merged_config,
+                asset_pool=asset_pool,
+                start_date=start_date,
+                end_date=end_date,
+                interval=interval,
+                initial_cash=initial_cash,
+                requested_symbols=requested_symbols,
+            )
+            status = HTTPStatus.BAD_REQUEST if result.get("status") == "missing_data" else HTTPStatus.OK
+            self.send_json({"ok": result.get("status") != "missing_data", "backtest": result, "server": self.app.status_payload()}, status)
         except json.JSONDecodeError as exc:
             self.send_json({"ok": False, "error": f"Invalid JSON: {exc}"}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:

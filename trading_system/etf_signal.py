@@ -217,6 +217,69 @@ def fetch_yahoo_bars(symbol: str, years: int = 3) -> list[Bar]:
     return sorted(bars, key=lambda x: x.date)
 
 
+def fetch_yahoo_bars_range(symbol: str, start_date: dt.date, end_date: dt.date) -> list[Bar]:
+    period1 = int(dt.datetime.combine(start_date, dt.time.min, tzinfo=dt.timezone.utc).timestamp())
+    period2 = int(dt.datetime.combine(end_date + dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc).timestamp())
+    query = urllib.parse.urlencode(
+        {
+            "period1": period1,
+            "period2": period2,
+            "interval": "1d",
+            "includePrePost": "false",
+            "events": "history",
+        }
+    )
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?{query}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 ETFSignalTool/1.0",
+            "Accept": "application/json",
+        },
+    )
+    payload = yahoo_request_json(req, symbol, "daily-range")
+
+    chart = payload.get("chart", {})
+    error = chart.get("error")
+    if error:
+        raise RuntimeError(f"Yahoo chart error for {symbol}: {error}")
+    result = (chart.get("result") or [None])[0]
+    if not result:
+        raise RuntimeError(f"No chart data returned for {symbol}")
+
+    timestamps = result.get("timestamp") or []
+    quote = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+    opens = quote.get("open") or []
+    highs = quote.get("high") or []
+    lows = quote.get("low") or []
+    closes = quote.get("close") or []
+    volumes = quote.get("volume") or []
+
+    bars: list[Bar] = []
+    for i, ts in enumerate(timestamps):
+        try:
+            o = opens[i]
+            h = highs[i]
+            l = lows[i]
+            c = closes[i]
+            v = volumes[i] if i < len(volumes) else 0
+        except IndexError:
+            continue
+        if o is None or h is None or l is None or c is None:
+            continue
+        bars.append(
+            Bar(
+                date=dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc).date(),
+                open=float(o),
+                high=float(h),
+                low=float(l),
+                close=float(c),
+                volume=float(v or 0),
+            )
+        )
+    return sorted(bars, key=lambda x: x.date)
+
+
 def fetch_yahoo_intraday(symbol: str, range_value: str = "5d", interval: str = "5m") -> list[IntradayPoint]:
     query = urllib.parse.urlencode(
         {
@@ -321,7 +384,9 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
     defaults = {
         "timeframe_days": [2, 14],
         "min_avg_dollar_volume_20": 50_000_000,
+        "avg_dollar_volume_bars": 20,
         "sma20_flat_slope_pct_3d": -0.2,
+        "sma20_slope_bars": 3,
         "breakout_window_days": 14,
         "pullback_lookback_days": 5,
         "near_support_pct": 1.0,
@@ -487,8 +552,11 @@ def build_short_term_analysis(
     breakout_window = int(rules["breakout_window_days"])
     atr_period = int(rules["atr_period"])
 
-    avg_volume20 = statistics.fmean([v for v in volumes[-20:] if v is not None]) if len(volumes) >= 20 else None
-    avg_dollar_volume20 = average_dollar_volume(bars, 20)
+    avg_window = max(1, int(rules.get("avg_dollar_volume_bars", 20)))
+    slope_bars = max(1, int(rules.get("sma20_slope_bars", 3)))
+    short_sma_days = max(1, int(config["rules"]["short_sma_days"]))
+    avg_volume20 = statistics.fmean([v for v in volumes[-avg_window:] if v is not None]) if len(volumes) >= avg_window else None
+    avg_dollar_volume20 = average_dollar_volume(bars, avg_window)
     atr_value = average_true_range(bars, atr_period)
     atr_pct = atr_value / entry_price * 100 if atr_value is not None and entry_price > 0 else None
     breakout_buffer_pct = max(
@@ -507,7 +575,11 @@ def build_short_term_analysis(
         float(rules["near_support_pct"]),
         float(rules["support_near_atr_multiplier"]) * atr_pct,
     ) if atr_pct is not None else float(rules["near_support_pct"])
-    prior_sma20 = statistics.fmean(closes[-23:-3]) if len(closes) >= 23 else None
+    prior_sma20 = (
+        statistics.fmean(closes[-short_sma_days - slope_bars : -slope_bars])
+        if len(closes) >= short_sma_days + slope_bars
+        else None
+    )
     sma20_slope_pct_3d = percent_change(sma20, prior_sma20)
     recent_low = safe_min(lows[-lookback:])
     prior_low = safe_min(lows[-lookback - 1 : -1])

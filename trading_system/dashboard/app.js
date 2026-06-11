@@ -300,6 +300,16 @@ let paperAccountCapabilities = {
 };
 let paperAccountLoading = false;
 let paperAccountError = "";
+let backtestResult = null;
+let backtestLoading = false;
+let backtestError = "";
+let backtestFormState = {
+  startDate: "2023-01-01",
+  endDate: "2023-12-31",
+  interval: "4h",
+  initialCashUsdt: 100000,
+  symbols: "",
+};
 let lastSnapshot = null;
 let currentConfig = null;
 let currentConfigError = "";
@@ -3114,6 +3124,33 @@ function MonitoringTimeline(items) {
 }
 
 function buildBacktestModel(snapshot) {
+  if (backtestResult) {
+    return {
+      status: backtestResult.status || "completed",
+      statusLabel: backtestResult.statusLabel || "已完成",
+      statusTone: backtestResult.status === "missing_data" ? "bad" : "good",
+      updatedAt: backtestResult.updatedAt || snapshot?.generated_at || null,
+      benchmarkSymbol: backtestResult.benchmarkSymbol || "SPY",
+      frequency: backtestResult.frequency || (backtestResult.interval === "4h" ? "4小时" : "日线"),
+      startDate: backtestResult.startDate || null,
+      endDate: backtestResult.endDate || null,
+      interval: backtestResult.interval || backtestFormState.interval,
+      transactionCostPct: null,
+      slippagePct: currentConfig?.execution?.slippage_pct ?? null,
+      includesDividends: false,
+      executionConvention: backtestResult.executionModel || "next_open",
+      summary: backtestResult.summary || {},
+      equityCurve: Array.isArray(backtestResult.equityCurve) ? backtestResult.equityCurve : [],
+      drawdownCurve: Array.isArray(backtestResult.drawdownCurve) ? backtestResult.drawdownCurve : [],
+      annualPerformance: Array.isArray(backtestResult.annualPerformance) ? backtestResult.annualPerformance : [],
+      trades: Array.isArray(backtestResult.trades) ? backtestResult.trades : [],
+      signalPerformance: backtestResult.signalPerformance || [],
+      robustness: backtestResult.robustness || [],
+      diagnostics: backtestResult.diagnostics || {},
+      missingData: Array.isArray(backtestResult.missingData) ? backtestResult.missingData : [],
+      expectedPath: backtestResult.expectedPath || "",
+    };
+  }
   return {
     status: "not_run",
     statusLabel: "未运行",
@@ -3232,6 +3269,19 @@ function buildCurrentHoldingPerformanceModel(items) {
 }
 
 function renderBacktestSummary(model) {
+  {
+    const summary = model.summary || {};
+    const hasResult = model.status === "completed";
+    const cards = [
+      { label: "累计收益", value: hasResult ? pct(summary.totalReturnPct, { sign: true }) : "待计算", helper: "策略总回报", tone: Number(summary.totalReturnPct || 0) >= 0 ? "green" : "red", icon: "return" },
+      { label: "年化收益", value: hasResult ? pct(summary.annualReturnPct, { sign: true }) : "待计算", helper: "CAGR", tone: Number(summary.annualReturnPct || 0) >= 0 ? "green" : "red", icon: "trend" },
+      { label: "最大回撤", value: hasResult ? pct(summary.maxDrawdownPct) : "待计算", helper: "历史最大回撤", tone: "red", icon: "drawdown" },
+      { label: "夏普比率", value: hasResult && summary.sharpe !== null && summary.sharpe !== undefined ? fmt.format(summary.sharpe) : "待计算", helper: "风险调整后收益", tone: "blue", icon: "scale" },
+      { label: "相对基准", value: hasResult && summary.excessReturnPct !== null && summary.excessReturnPct !== undefined ? pct(summary.excessReturnPct, { sign: true }) : "待计算", helper: `相对 ${model.benchmarkSymbol} 超额`, tone: "amber", icon: "benchmark" },
+    ];
+    document.getElementById("summaryCards").innerHTML = cards.map((card) => SummaryCard(card)).join("");
+    return;
+  }
   const cards = [
     { label: "累计收益", value: "待计算", helper: "策略总回报", tone: "slate", icon: "return" },
     { label: "年化收益", value: "待计算", helper: "CAGR", tone: "slate", icon: "trend" },
@@ -3245,6 +3295,7 @@ function renderBacktestSummary(model) {
 
 function renderBacktestPage(items, snapshot) {
   const model = buildBacktestModel(snapshot);
+  const summary = model.summary || {};
   const holdingModel = buildCurrentHoldingPerformanceModel(items);
   renderBacktestSummary(model);
 
@@ -3283,6 +3334,7 @@ function renderBacktestPage(items, snapshot) {
       ${BacktestDiagnosisPanel(model)}
     </section>
   `;
+  bindBacktestEvents();
 }
 
 function CurrentHoldingPerformanceCard(model) {
@@ -3599,6 +3651,44 @@ function PaperRunLog(logItems) {
 }
 
 function BacktestConfigBar(model) {
+  {
+    const statusText = backtestLoading ? "运行中" : model.status === "completed" ? "已完成" : model.status === "missing_data" ? "缺少数据" : "未运行";
+    return `
+      <section class="backtest-config-bar backtest-control-bar">
+        <div class="backtest-control-grid">
+          <label>
+            <span>开始日期</span>
+            <input type="date" data-backtest-field="startDate" value="${escapeHtml(backtestFormState.startDate)}">
+          </label>
+          <label>
+            <span>结束日期</span>
+            <input type="date" data-backtest-field="endDate" value="${escapeHtml(backtestFormState.endDate)}">
+          </label>
+          <label>
+            <span>颗粒度</span>
+            <select data-backtest-field="interval">
+              <option value="1d" ${backtestFormState.interval === "1d" ? "selected" : ""}>1d 日线</option>
+              <option value="4h" ${backtestFormState.interval === "4h" ? "selected" : ""}>4h 四小时</option>
+            </select>
+          </label>
+          <label>
+            <span>初始资金 USDT</span>
+            <input type="number" min="1" step="1000" data-backtest-field="initialCashUsdt" value="${escapeHtml(backtestFormState.initialCashUsdt)}">
+          </label>
+          <label class="wide">
+            <span>测试品种</span>
+            <input type="text" data-backtest-field="symbols" value="${escapeHtml(backtestFormState.symbols)}" placeholder="例如：SPY, QQQ, VOO, AAPL；留空使用当前策略宇宙">
+          </label>
+        </div>
+        <div class="backtest-actions">
+          <span class="backtest-run-status ${escapeHtml(model.status || "not_run")}">${escapeHtml(statusText)}</span>
+          <button class="asset-primary-button" type="button" data-backtest-run ${backtestLoading ? "disabled" : ""}>${backtestLoading ? "回测中..." : "运行回测"}</button>
+        </div>
+        ${backtestError ? `<div class="backtest-error">${escapeHtml(backtestError)}</div>` : ""}
+        ${model.status === "missing_data" ? BacktestMissingDataNotice(model) : ""}
+      </section>
+    `;
+  }
   const configItems = [
     { label: "区间", value: model.startDate && model.endDate ? `${model.startDate} - ${model.endDate}` : "未运行" },
     { label: "基准", value: model.benchmarkSymbol || "未配置" },
@@ -3625,7 +3715,107 @@ function BacktestConfigBar(model) {
   `;
 }
 
+function BacktestMissingDataNotice(model) {
+  const rows = Array.isArray(model.missingData) ? model.missingData : [];
+  const examplePath = model.expectedPath || ".local-data-backup/history/4h/{SYMBOL}.csv";
+  return `
+    <div class="backtest-missing-data">
+      <strong>4h 回测缺少本地历史K线 CSV。</strong>
+      <span>请将文件放到：${escapeHtml(examplePath)}</span>
+      ${rows.length ? `
+        <ul>
+          ${rows.slice(0, 12).map((row) => `<li>${escapeHtml(row.symbol || "")}：${escapeHtml(row.error || "缺少数据")}</li>`).join("")}
+        </ul>
+      ` : ""}
+    </div>
+  `;
+}
+
+function BacktestSparkline(points, valueKey, invert = false) {
+  const rows = (Array.isArray(points) ? points : [])
+    .map((point) => ({ ...point, value: Number(point?.[valueKey]) }))
+    .filter((point) => Number.isFinite(point.value));
+  if (rows.length < 2) {
+    return `<div class="empty-state compact">数据点不足，无法绘制曲线</div>`;
+  }
+  const values = rows.map((point) => point.value);
+  let minValue = Math.min(...values);
+  let maxValue = Math.max(...values);
+  if (minValue === maxValue) {
+    minValue -= 1;
+    maxValue += 1;
+  }
+  const width = 720;
+  const height = 220;
+  const pad = 18;
+  const coords = rows.map((point, index) => {
+    const x = pad + index / Math.max(1, rows.length - 1) * (width - pad * 2);
+    const ratio = (point.value - minValue) / (maxValue - minValue);
+    const y = invert
+      ? pad + ratio * (height - pad * 2)
+      : height - pad - ratio * (height - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const first = rows[0];
+  const last = rows[rows.length - 1];
+  return `
+    <svg class="backtest-line-chart" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="回测曲线">
+      <polyline points="${coords.join(" ")}" fill="none"></polyline>
+      <circle cx="${coords[coords.length - 1].split(",")[0]}" cy="${coords[coords.length - 1].split(",")[1]}" r="4"></circle>
+    </svg>
+    <div class="backtest-chart-range">
+      <span>${escapeHtml(first.date || first.time || "")}</span>
+      <strong>${valueKey === "equityUsdt" ? formatUsdt(last.value) : pct(last.value)}</strong>
+      <span>${escapeHtml(last.date || last.time || "")}</span>
+    </div>
+  `;
+}
+
 function BacktestChartCard({ title, subtitle, legend, emptyText, sideMetrics, tone = "equity" }) {
+  if (backtestResult?.status === "completed") {
+    const summary = backtestResult.summary || {};
+    const isDrawdown = tone === "drawdown";
+    const points = isDrawdown ? (backtestResult.drawdownCurve || []) : (backtestResult.equityCurve || []);
+    const valueKey = isDrawdown ? "drawdownPct" : "equityUsdt";
+    sideMetrics = isDrawdown
+      ? [
+          { label: "最大回撤", value: summary.maxDrawdownPct !== null && summary.maxDrawdownPct !== undefined ? pct(summary.maxDrawdownPct) : "待计算" },
+          { label: "交易次数", value: summary.tradeCount ?? "待计算" },
+          { label: `同期 ${backtestResult.benchmarkSymbol || "SPY"}`, value: summary.benchmarkReturnPct !== null && summary.benchmarkReturnPct !== undefined ? pct(summary.benchmarkReturnPct, { sign: true }) : "待计算" },
+        ]
+      : [
+          { label: "最终净值", value: summary.finalEquityUsdt ? formatUsdt(summary.finalEquityUsdt) : "待计算" },
+          { label: "累计收益", value: summary.totalReturnPct !== null && summary.totalReturnPct !== undefined ? pct(summary.totalReturnPct, { sign: true }) : "待计算" },
+          { label: "超额", value: summary.excessReturnPct !== null && summary.excessReturnPct !== undefined ? pct(summary.excessReturnPct, { sign: true }) : "待计算" },
+        ];
+    return `
+      <section class="backtest-card backtest-chart-card ${tone}">
+        <div class="backtest-card-header">
+          <div>
+            <h2>${escapeHtml(title)}</h2>
+            <p>${escapeHtml(subtitle)}</p>
+          </div>
+          <div class="backtest-legend">
+            ${legend.map((item, index) => `<span class="${index === 0 ? "strategy" : "benchmark"}">${escapeHtml(item)}</span>`).join("")}
+          </div>
+        </div>
+        <div class="backtest-chart-body">
+          <div class="backtest-chart-empty has-chart">
+            <div class="chart-grid-lines" aria-hidden="true"></div>
+            ${BacktestSparkline(points, valueKey, isDrawdown)}
+          </div>
+          <aside class="backtest-chart-metrics">
+            ${sideMetrics.map((item) => `
+              <div>
+                <span>${escapeHtml(item.label)}</span>
+                <strong>${escapeHtml(item.value)}</strong>
+              </div>
+            `).join("")}
+          </aside>
+        </div>
+      </section>
+    `;
+  }
   return `
     <section class="backtest-card backtest-chart-card ${tone}">
       <div class="backtest-card-header">
@@ -3688,6 +3878,51 @@ function AnnualPerformanceTable(rows) {
 }
 
 function BacktestTradesTable(rows) {
+  {
+    const safeRows = Array.isArray(rows) ? rows.slice(-120).reverse() : [];
+    return `
+      <section class="backtest-card">
+        <div class="backtest-card-header compact">
+          <h2>交易记录</h2>
+          ${SettingsMiniBadge(safeRows.length ? `${safeRows.length} 条` : "暂无记录", "neutral")}
+        </div>
+        <div class="backtest-table-wrap">
+          <table class="backtest-small-table trades backtest-trade-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>品种</th>
+                <th>方向</th>
+                <th>数量</th>
+                <th>价格</th>
+                <th>金额</th>
+                <th>盈亏/R</th>
+                <th>原因</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${safeRows.length ? safeRows.map((row) => {
+                const pnl = Number(row.realizedPnlUsdt);
+                const realizedR = Number(row.realizedR);
+                return `
+                  <tr>
+                    <td>${escapeHtml(formatDateTime(row.time || row.date))}</td>
+                    <td class="symbol-cell">${escapeHtml(row.symbol)}</td>
+                    <td>${SettingsMiniBadge(row.side === "BUY" ? "买入" : "卖出", row.side === "BUY" ? "good" : "bad")}</td>
+                    <td>${formatAssetQuantity(row.quantity)}</td>
+                    <td>${formatUsdt(row.price)}</td>
+                    <td>${formatUsdt(row.valueUsdt)}</td>
+                    <td class="${changeClass(pnl)}">${row.side === "SELL" && Number.isFinite(pnl) ? formatSignedUsdt(pnl) : "—"}${row.side === "SELL" && Number.isFinite(realizedR) ? `<small>${fmt.format(realizedR)}R</small>` : ""}</td>
+                    <td>${escapeHtml(row.reason || "—")}${row.ambiguous ? `<small class="danger-text">ambiguous</small>` : ""}</td>
+                  </tr>
+                `;
+              }).join("") : `<tr><td colspan="8"><div class="empty-state compact">尚未生成逐笔回测交易记录</div></td></tr>`}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
   return `
     <section class="backtest-card">
       <div class="backtest-card-header compact">
@@ -3722,6 +3957,64 @@ function BacktestTradesTable(rows) {
 }
 
 function BacktestDiagnosisPanel(model) {
+  {
+    const summary = model.summary || {};
+    const diagnostics = model.diagnostics || {};
+    const notes = Array.isArray(diagnostics.notes) ? diagnostics.notes : [];
+    const missing = Array.isArray(model.missingData) ? model.missingData : [];
+    return `
+      <aside class="backtest-diagnosis-panel">
+        <div class="backtest-diagnosis-header">
+          <div>
+            <h2>回测诊断</h2>
+            <p>${escapeHtml(model.frequency || "日线")} · ${escapeHtml(model.startDate || "未运行")} 至 ${escapeHtml(model.endDate || "未运行")}</p>
+          </div>
+          ${StatusBadge({ text: model.status === "completed" ? "已完成" : model.status === "missing_data" ? "缺少数据" : "待评估", className: model.status === "completed" ? "healthy" : model.status === "missing_data" ? "risk" : "watch" })}
+        </div>
+
+        <section class="backtest-stat-grid">
+          ${[
+            ["胜率", summary.winRatePct !== null && summary.winRatePct !== undefined ? pct(summary.winRatePct) : "—"],
+            ["盈亏比", summary.profitFactor !== null && summary.profitFactor !== undefined ? fmt.format(summary.profitFactor) : "—"],
+            ["平均 R", summary.averageR !== null && summary.averageR !== undefined ? `${fmt.format(summary.averageR)}R` : "—"],
+            ["总交易次数", summary.tradeCount ?? "—"],
+            ["闭合交易", summary.closedTradeCount ?? "—"],
+            ["测试品种", Array.isArray(diagnostics.tradeSymbols) ? diagnostics.tradeSymbols.length : "—"],
+          ].map(([label, value]) => `
+            <div class="backtest-stat">
+              <span>${escapeHtml(label)}</span>
+              <strong>${escapeHtml(value)}</strong>
+            </div>
+          `).join("")}
+        </section>
+
+        <section class="backtest-two-column">
+          <div>
+            <h3>主要结论</h3>
+            <ul class="diagnosis-list positive">
+              ${model.status === "completed" ? `
+                <li>已按当前短线策略完成历史逐K线回放。</li>
+                <li>买入信号按下一根K线开盘成交，避免未来函数。</li>
+              ` : `<li>尚无完整回测结果。</li>`}
+            </ul>
+          </div>
+          <div>
+            <h3>主要关注</h3>
+            <ul class="diagnosis-list warning">
+              ${missing.length ? `<li>缺少 ${missing.length} 个品种的历史数据。</li>` : ""}
+              <li>4h 回测依赖本地 CSV 覆盖范围。</li>
+              <li>当前未计入真实手续费和税费。</li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="signal-performance-section">
+          <h3>执行说明</h3>
+          ${notes.length ? `<ul class="diagnosis-list neutral">${notes.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : `<div class="empty-state compact">运行回测后显示执行说明。</div>`}
+        </section>
+      </aside>
+    `;
+  }
   return `
     <aside class="backtest-diagnosis-panel">
       <div class="backtest-diagnosis-header">
@@ -5920,7 +6213,9 @@ function updateRouteChrome(route) {
       dataScope.textContent = "模拟";
     } else {
       dataScopeLabel.textContent = "数据截至";
-      dataScope.textContent = route === "backtest" ? "回测未运行" : "收盘后";
+      dataScope.textContent = route === "backtest"
+        ? (backtestResult?.status === "completed" ? `${backtestResult.interval || backtestFormState.interval} 已回测` : "回测未运行")
+        : "收盘后";
     }
   }
   document.querySelectorAll("[data-route]").forEach((item) => {
@@ -5976,6 +6271,61 @@ function render(snapshot, options = {}) {
   setNotice(errors.join("；"));
   if (options.cache !== "skip") {
     saveDashboardCache(snapshot);
+  }
+}
+
+function bindBacktestEvents() {
+  document.querySelectorAll("[data-backtest-field]").forEach((field) => {
+    field.addEventListener("change", () => {
+      const key = field.dataset.backtestField;
+      backtestFormState[key] = key === "initialCashUsdt" ? Number(field.value || 100000) : field.value;
+    });
+    field.addEventListener("input", () => {
+      const key = field.dataset.backtestField;
+      backtestFormState[key] = key === "initialCashUsdt" ? Number(field.value || 100000) : field.value;
+    });
+  });
+  document.querySelector("[data-backtest-run]")?.addEventListener("click", () => runBacktest());
+}
+
+function parseBacktestSymbols(value) {
+  return String(value || "")
+    .split(/[\s,;，；]+/)
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+async function runBacktest() {
+  if (backtestLoading) return;
+  backtestLoading = true;
+  backtestError = "";
+  render(lastSnapshot);
+  try {
+    const response = await fetch("/api/backtest/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        startDate: backtestFormState.startDate,
+        endDate: backtestFormState.endDate,
+        interval: backtestFormState.interval,
+        initialCashUsdt: Number(backtestFormState.initialCashUsdt || 100000),
+        symbols: parseBacktestSymbols(backtestFormState.symbols),
+      }),
+    });
+    const payload = await response.json();
+    if (payload.backtest) {
+      backtestResult = payload.backtest;
+    }
+    if (!response.ok || !payload.ok) {
+      backtestError = payload.backtest?.message || payload.error || "回测执行失败";
+    } else {
+      setNotice("回测已完成。", "neutral");
+    }
+  } catch (error) {
+    backtestError = error.message || "回测执行失败";
+  } finally {
+    backtestLoading = false;
+    render(lastSnapshot);
   }
 }
 
