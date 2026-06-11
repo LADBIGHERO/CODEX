@@ -213,7 +213,13 @@ const settingsFieldLabels = {
   "short_term.risk_per_trade_pct": "单笔风险",
   "short_term.base_position_pct": "基础开仓比例",
   "short_term.max_open_risk_pct": "组合开放风险",
+  "short_term.market_normal_position_multiplier": "大盘 normal 加仓",
   "short_term.theme_max_position_pct": "主题仓位上限",
+  "short_term.trend_runner_min_momentum_20d_pct": "趋势仓 20D 动量门槛",
+  "short_term.trend_runner_max_holding_days": "趋势仓最长持有",
+  "short_term.trend_runner_target1_sell_pct": "趋势仓 TP1 止盈比例",
+  "short_term.trend_runner_target2_sell_pct": "趋势仓 TP2 止盈比例",
+  "short_term.trend_runner_atr_stop_multiplier": "趋势仓 ATR 移动止盈",
   "short_term.weak_momentum_5d_pct": "弱动量卖出阈值",
 };
 
@@ -5236,11 +5242,17 @@ function CurrentStrategyRuleBook(config) {
   const target2BreakoutR = Number(shortTerm.target2_breakout_r || 3);
   const weakMomentumPct = formatRulePercent(shortTerm.weak_momentum_5d_pct ?? -2);
   const riskPerTradePct = formatRulePercent(shortTerm.risk_per_trade_pct ?? 1);
-  const basePositionPct = formatRulePercent(shortTerm.base_position_pct ?? 5);
+  const basePositionPct = formatRulePercent(shortTerm.base_position_pct ?? 10);
   const maxSinglePct = formatRulePercent(shortTerm.max_single_position_pct ?? 15);
-  const maxOpenRiskPct = formatRulePercent(shortTerm.max_open_risk_pct ?? 3);
-  const themeMaxPct = formatRulePercent(shortTerm.theme_max_position_pct ?? 20);
+  const maxOpenRiskPct = formatRulePercent(shortTerm.max_open_risk_pct ?? 8);
+  const themeMaxPct = formatRulePercent(shortTerm.theme_max_position_pct ?? 25);
   const qqqWarningMultiplier = Number(shortTerm.qqq_warning_growth_multiplier ?? 0.5);
+  const marketNormalMultiplier = Number(shortTerm.market_normal_position_multiplier ?? 1.25);
+  const trendRunnerMomentum = formatRulePercent(shortTerm.trend_runner_min_momentum_20d_pct ?? 3);
+  const trendRunnerMaxDays = Number(shortTerm.trend_runner_max_holding_days || 60);
+  const trendRunnerTp1Sell = formatRulePercent(shortTerm.trend_runner_target1_sell_pct ?? 25);
+  const trendRunnerTp2Sell = formatRulePercent(shortTerm.trend_runner_target2_sell_pct ?? 25);
+  const trendRunnerAtrStop = Number(shortTerm.trend_runner_atr_stop_multiplier ?? 2.5);
   const lossStreakPauseDays = Number(shortTerm.loss_streak_pause_days || 20);
   const marketWarningMomentum = formatRulePercent(shortTerm.market_warning_momentum_5d_pct ?? -1.5);
   const marketBlockedMomentum = formatRulePercent(shortTerm.market_blocked_momentum_5d_pct ?? -3);
@@ -5294,6 +5306,17 @@ function CurrentStrategyRuleBook(config) {
       ],
     },
     {
+      title: "趋势仓跟踪",
+      eyebrow: "Trend Runner",
+      tone: "good",
+      points: [
+        `强趋势条件：价格在 SMA${shortSma} 上方、SMA${shortSma} 未转弱、个股不处于 blocked，且 20 日动量不低于 ${trendRunnerMomentum}。`,
+        `强趋势仓到 TP1 默认卖出 ${trendRunnerTp1Sell}，到 TP2 默认再卖出 ${trendRunnerTp2Sell}；剩余仓位不立即清仓，进入移动止盈跟踪。`,
+        `移动止盈参考不低于成本价、SMA${shortSma} 和 ${fmt.format(trendRunnerAtrStop)}×ATR${atrPeriod} 跟踪止损，保护利润同时保留趋势空间。`,
+        `趋势仓最长可跟踪 ${fmt.format(trendRunnerMaxDays)} 天；普通短线仓仍按 ${shortTerm.max_holding_days || 14} 天最大持有周期管理。`,
+      ],
+    },
+    {
       title: "卖出/退出",
       eyebrow: "Exit Signal",
       tone: "neutral",
@@ -5310,7 +5333,7 @@ function CurrentStrategyRuleBook(config) {
       tone: "info",
       points: [
         `实际仓位 = min(基础开仓 ${basePositionPct}、单票剩余额度 ${maxSinglePct}、主题/相关性剩余额度 ${themeMaxPct}、单笔风险预算 ${riskPerTradePct} / 止损距离)。`,
-        `组合总开放风险默认不超过 ${maxOpenRiskPct}；同一主题或高度相关标的合计仓位不超过 ${themeMaxPct}；ETF/个股模拟仓位仍受 60% / 40% 桶限制。`,
+        `组合总开放风险默认不超过 ${maxOpenRiskPct}；大盘 normal 时新开仓乘数 ${fmt.format(marketNormalMultiplier)}；同一主题或高度相关标的合计仓位不超过 ${themeMaxPct}；ETF/个股模拟仓位仍受 60% / 40% 桶限制。`,
         `QQQ warning 时科技成长股新开仓乘以 ${fmt.format(qqqWarningMultiplier)}，QQQ blocked 时暂停科技成长股新开仓。`,
         `连续亏损以 realized_r < 0 为准，并分别统计回踩/突破、ETF/个股；连续亏损 2 笔后新开仓减半，3 笔后暂停新开仓 ${fmt.format(lossStreakPauseDays)} 个交易日，到期后以 2 连亏状态降仓恢复观察。当前股票观察池 ${stockCount} 只。`,
       ],
@@ -5489,13 +5512,13 @@ function CurrentStrategyPanel(model) {
     SettingsSelect({
       label: "基础开仓比例",
       path: "short_term.base_position_pct",
-      options: [2, 3, 5, 7.5, 10].map((value) => ({ value, label: `${value}%` })),
+      options: [2, 3, 5, 8, 10].map((value) => ({ value, label: `${value}%` })),
       helper: "仓位公式的基础上限，不代表每次都买满",
     }),
     SettingsSelect({
       label: "组合开放风险",
       path: "short_term.max_open_risk_pct",
-      options: [1, 2, 3, 4, 5].map((value) => ({ value, label: `${value}%` })),
+      options: [3, 5, 8, 10].map((value) => ({ value, label: `${value}%` })),
       helper: "所有持仓到止损位的潜在亏损总和上限",
     }),
     SettingsSelect({
@@ -5517,6 +5540,12 @@ function CurrentStrategyPanel(model) {
       helper: "SPY/QQQ 为 warning 时新开仓乘数",
     }),
     SettingsSelect({
+      label: "大盘 normal 加仓",
+      path: "short_term.market_normal_position_multiplier",
+      options: [1, 1.1, 1.15, 1.25].map((value) => ({ value, label: `${Math.round(value * 100)}%` })),
+      helper: "SPY/QQQ 均为 normal 时的新开仓乘数",
+    }),
+    SettingsSelect({
       label: "个股 warning 降仓",
       path: "short_term.individual_warning_position_multiplier",
       options: [0.25, 0.5, 0.75, 1].map((value) => ({ value, label: `${Math.round(value * 100)}%` })),
@@ -5533,6 +5562,36 @@ function CurrentStrategyPanel(model) {
       path: "short_term.weak_momentum_5d_pct",
       options: [-1, -2, -3, -5].map((value) => ({ value, label: `${value}%` })),
       helper: "短线动量明显转弱时提示退出",
+    }),
+    SettingsSelect({
+      label: "趋势仓 20D 动量",
+      path: "short_term.trend_runner_min_momentum_20d_pct",
+      options: [3, 5, 8, 10].map((value) => ({ value, label: `${value}%` })),
+      helper: "达到该 20 日动量后，TP2 后可保留趋势跟踪仓",
+    }),
+    SettingsSelect({
+      label: "趋势仓最长持有",
+      path: "short_term.trend_runner_max_holding_days",
+      options: [30, 45, 60, 90].map((value) => ({ value, label: `${value}D` })),
+      helper: "强趋势仓进入移动止盈后的最长跟踪时间",
+    }),
+    SettingsSelect({
+      label: "趋势仓 TP1 卖出",
+      path: "short_term.trend_runner_target1_sell_pct",
+      options: [25, 35, 50].map((value) => ({ value, label: `${value}%` })),
+      helper: "强趋势仓到第一止盈后的卖出比例",
+    }),
+    SettingsSelect({
+      label: "趋势仓 TP2 卖出",
+      path: "short_term.trend_runner_target2_sell_pct",
+      options: [25, 35, 50, 65].map((value) => ({ value, label: `${value}%` })),
+      helper: "强趋势仓到第二止盈后的卖出比例，剩余仓位继续移动止盈",
+    }),
+    SettingsSelect({
+      label: "趋势仓 ATR 止盈",
+      path: "short_term.trend_runner_atr_stop_multiplier",
+      options: [1.5, 2, 2.5, 3].map((value) => ({ value, label: `${value}x` })),
+      helper: "移动止盈参考：当前价 - ATR 倍数",
     }),
   ];
 

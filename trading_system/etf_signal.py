@@ -399,7 +399,7 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
         "atr_breakout_multiplier": 0.25,
         "atr_stop_multiplier": 0.25,
         "atr_support_multiplier": 0.20,
-        "volume_multiplier": 1.2,
+        "volume_multiplier": 1.1,
         "max_stop_distance_pct": 4.0,
         "min_target1_r": 1.5,
         "ideal_target1_r": 1.8,
@@ -410,18 +410,25 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
         "trailing_stop_atr_multiplier": 1.5,
         "second_target_r": 2.5,
         "risk_per_trade_pct": 1.0,
-        "base_position_pct": 5.0,
+        "base_position_pct": 10.0,
         "max_single_position_pct": 15.0,
         "min_position_pct": 1.0,
-        "max_open_risk_pct": 3.0,
+        "max_open_risk_pct": 8.0,
         "market_warning_momentum_5d_pct": -1.5,
         "market_blocked_momentum_5d_pct": -3.0,
         "individual_warning_momentum_5d_pct": -2.0,
         "individual_blocked_momentum_5d_pct": -4.0,
         "market_warning_position_multiplier": 0.75,
+        "market_normal_position_multiplier": 1.25,
         "individual_warning_position_multiplier": 0.5,
         "qqq_warning_growth_multiplier": 0.5,
-        "theme_max_position_pct": 20.0,
+        "theme_max_position_pct": 25.0,
+        "trend_runner_enabled": True,
+        "trend_runner_min_momentum_20d_pct": 3.0,
+        "trend_runner_max_holding_days": 60,
+        "trend_runner_target1_sell_pct": 25.0,
+        "trend_runner_target2_sell_pct": 25.0,
+        "trend_runner_atr_stop_multiplier": 2.5,
         "weak_momentum_5d_pct": -2.0,
         "time_stop_mfe_days": 5,
         "time_stop_mfe_r": 0.8,
@@ -640,7 +647,7 @@ def build_short_term_analysis(
     breakout_setup = bool(
         breakout_level
         and latest.close > breakout_level
-        and breakout_price_confirmed
+        and (breakout_price_confirmed or breakout_volume_ok)
     )
 
     stop_base = platform_low if breakout_setup and platform_low else support_base
@@ -717,6 +724,7 @@ def build_short_term_analysis(
     position_pct = min(position_pct_candidates) if position_pct_candidates else None
 
     momentum5 = rate_of_change(closes, 5)
+    momentum20 = rate_of_change(closes, 20)
     individual_risk_status, individual_risk_reasons = classify_risk_state(
         close=latest.close,
         sma20=sma20,
@@ -795,6 +803,15 @@ def build_short_term_analysis(
     if pullback_base_setup and not pullback_confirmation_ok and not breakout_setup:
         reject_reasons.append("回踩确认不足：收盘未高于动态支撑缓冲，且无次日支撑确认")
 
+    trend_runner = bool(
+        rules.get("trend_runner_enabled", True)
+        and price_above_sma20
+        and sma20_flat_or_up
+        and individual_risk_status != "blocked"
+        and momentum20 is not None
+        and momentum20 >= float(rules["trend_runner_min_momentum_20d_pct"])
+    )
+
     confidence_score = 50
     if trigger == "pullback":
         confidence_score += 10
@@ -834,6 +851,7 @@ def build_short_term_analysis(
         "own_risk_ok": own_risk_ok,
         "price_above_sma20": price_above_sma20,
         "sma20_slope_pct_3d": sma20_slope_pct_3d,
+        "sma20": sma20,
         "sma20_flat_or_up": sma20_flat_or_up,
         "pullback_base_setup": pullback_base_setup,
         "pullback_setup": pullback_setup,
@@ -871,6 +889,12 @@ def build_short_term_analysis(
         "target2_style": target2_style,
         "target2_trailing_stop": bool(rules.get("target2_trailing_stop", True)),
         "trailing_stop_atr_multiplier": float(rules["trailing_stop_atr_multiplier"]),
+        "trend_runner": trend_runner,
+        "trend_runner_min_momentum_20d_pct": float(rules["trend_runner_min_momentum_20d_pct"]),
+        "trend_runner_max_holding_days": int(rules["trend_runner_max_holding_days"]),
+        "trend_runner_target1_sell_pct": float(rules["trend_runner_target1_sell_pct"]),
+        "trend_runner_target2_sell_pct": float(rules["trend_runner_target2_sell_pct"]),
+        "trend_runner_atr_stop_multiplier": float(rules["trend_runner_atr_stop_multiplier"]),
         "platform_height": platform_height,
         "risk_reward": risk_reward,
         "risk_reward_valid": risk_reward_ok,
@@ -889,6 +913,7 @@ def build_short_term_analysis(
         "breakout_level": breakout_level,
         "support_base": support_base,
         "momentum_5_pct": momentum5,
+        "momentum_20_pct": momentum20,
         "stop_distance_ok": stop_distance_ok,
         "risk_reward_ok": risk_reward_ok,
         "sell_reasons": sell_reasons,
@@ -949,6 +974,9 @@ def finalize_short_term_signals(signals: dict[str, Signal], config: dict[str, An
             if short_term.get("position_pct") is not None:
                 short_term["position_pct"] = float(short_term["position_pct"]) * float(rules["market_warning_position_multiplier"])
                 short_term["position_adjustment_multiplier"] = float(short_term.get("position_adjustment_multiplier") or 1.0) * float(rules["market_warning_position_multiplier"])
+        if market_risk_status == "normal" and short_term.get("position_pct") is not None:
+            short_term["position_pct"] = float(short_term["position_pct"]) * float(rules["market_normal_position_multiplier"])
+            short_term["position_adjustment_multiplier"] = float(short_term.get("position_adjustment_multiplier") or 1.0) * float(rules["market_normal_position_multiplier"])
         if str(short_term.get("theme") or "") == qqq_proxy_theme:
             if qqq_status == "blocked":
                 short_term["reject_reasons"].append("QQQ blocked，暂停科技成长主题新开仓")

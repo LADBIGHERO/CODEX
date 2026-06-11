@@ -119,8 +119,14 @@ EDITABLE_CONFIG_PATHS = {
     "short_term.max_open_risk_pct",
     "short_term.theme_max_position_pct",
     "short_term.market_warning_position_multiplier",
+    "short_term.market_normal_position_multiplier",
     "short_term.individual_warning_position_multiplier",
     "short_term.qqq_warning_growth_multiplier",
+    "short_term.trend_runner_min_momentum_20d_pct",
+    "short_term.trend_runner_max_holding_days",
+    "short_term.trend_runner_target1_sell_pct",
+    "short_term.trend_runner_target2_sell_pct",
+    "short_term.trend_runner_atr_stop_multiplier",
     "short_term.weak_momentum_5d_pct",
     "short_term.time_stop_mfe_days",
     "short_term.time_stop_mfe_r",
@@ -211,11 +217,11 @@ def empty_paper_account_config(initial_cash: float = DEFAULT_PAPER_CASH_USDT) ->
         "settings": {
             "initialCashUsdt": cash,
             "riskPerTradePct": 1.0,
-            "entryPositionPct": 5.0,
+            "entryPositionPct": 10.0,
             "targetEtfWeightPct": 60.0,
             "targetStockWeightPct": 40.0,
             "maxSinglePositionPct": 15.0,
-            "maxOpenRiskPct": 3.0,
+            "maxOpenRiskPct": 8.0,
             "stopExecutionMode": "intraday_stop",
             "autoRun": True,
             "commissionPct": 0.0,
@@ -358,11 +364,11 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
     settings = {
         "initialCashUsdt": initial_cash,
         "riskPerTradePct": min(5.0, max(0.1, clean_float(raw_settings.get("riskPerTradePct"), 1.0, 0.1))),
-        "entryPositionPct": min(10.0, max(1.0, clean_float(raw_settings.get("entryPositionPct"), 5.0, 1.0))),
+        "entryPositionPct": min(10.0, max(1.0, clean_float(raw_settings.get("entryPositionPct"), 10.0, 1.0))),
         "targetEtfWeightPct": min(100.0, max(0.0, clean_float(raw_settings.get("targetEtfWeightPct"), 60.0, 0.0))),
         "targetStockWeightPct": min(100.0, max(0.0, clean_float(raw_settings.get("targetStockWeightPct"), 40.0, 0.0))),
         "maxSinglePositionPct": min(100.0, max(1.0, clean_float(raw_settings.get("maxSinglePositionPct"), 15.0, 1.0))),
-        "maxOpenRiskPct": min(20.0, max(0.1, clean_float(raw_settings.get("maxOpenRiskPct"), 3.0, 0.1))),
+        "maxOpenRiskPct": min(20.0, max(0.1, clean_float(raw_settings.get("maxOpenRiskPct"), 8.0, 0.1))),
         "stopExecutionMode": str(raw_settings.get("stopExecutionMode") or "intraday_stop")
         if str(raw_settings.get("stopExecutionMode") or "intraday_stop") in {"intraday_stop", "close_confirm_stop"}
         else "intraday_stop",
@@ -397,6 +403,13 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
                 "target2Price": clean_float(raw_entry.get("target2Price"), 0.0, 0.0) or None,
                 "lastPrice": clean_float(raw_entry.get("lastPrice"), avg_cost, 0.0) or avg_cost,
                 "partialTaken": bool(raw_entry.get("partialTaken")),
+                "target2Taken": bool(raw_entry.get("target2Taken")),
+                "runnerActive": bool(raw_entry.get("runnerActive")),
+                "trendRunner": bool(raw_entry.get("trendRunner")),
+                "target1SellPct": clean_float(raw_entry.get("target1SellPct"), 25.0, 0.0),
+                "target2SellPct": clean_float(raw_entry.get("target2SellPct"), 25.0, 0.0),
+                "trendRunnerMaxHoldingDays": int(clean_float(raw_entry.get("trendRunnerMaxHoldingDays"), 60, 1)),
+                "trendRunnerAtrStopMultiplier": clean_float(raw_entry.get("trendRunnerAtrStopMultiplier"), 2.5, 0.1),
                 "realizedPnlUsdt": clean_float(raw_entry.get("realizedPnlUsdt"), 0.0),
                 "entryPositionPct": clean_float(raw_entry.get("entryPositionPct"), 0.0, 0.0) or None,
                 "allocationCapPct": clean_float(raw_entry.get("allocationCapPct"), 0.0, 0.0) or None,
@@ -1199,7 +1212,7 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
     stop_execution_mode = str(settings.get("stopExecutionMode") or "intraday_stop")
     if stop_execution_mode not in {"intraday_stop", "close_confirm_stop"}:
         stop_execution_mode = "intraday_stop"
-    max_open_risk_pct = clean_float(settings.get("maxOpenRiskPct"), 3.0, 0.1)
+    max_open_risk_pct = clean_float(settings.get("maxOpenRiskPct"), 8.0, 0.1)
 
     for symbol, position in list(positions.items()):
         if not isinstance(position, dict):
@@ -1249,10 +1262,21 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             )
         if trade is None and stop_price > 0 and price <= stop_price:
             trade = close_paper_position(account, position, quantity, price, "触发短线止损", signal_id, executed_at)
-        elif trade is None and target2_hit:
-            trade = close_paper_position(account, position, quantity, max(price, target2_price), "到达第二止盈", signal_id, executed_at)
+        elif trade is None and target2_hit and not position.get("target2Taken"):
+            target2_sell_pct = clean_float(position.get("target2SellPct"), 25.0, 1.0)
+            target1_sell_pct = clean_float(position.get("target1SellPct"), 25.0, 1.0)
+            trend_runner = bool(position.get("trendRunner"))
+            combined_sell_pct = target2_sell_pct + (0.0 if position.get("partialTaken") else target1_sell_pct)
+            sell_quantity = quantity if not trend_runner else quantity * min(100.0, max(0.0, combined_sell_pct)) / 100
+            trade = close_paper_position(account, position, sell_quantity, max(price, target2_price), "到达第二止盈", signal_id, executed_at)
+            if trend_runner and str(symbol).upper() in positions:
+                position["partialTaken"] = True
+                position["target2Taken"] = True
+                position["runnerActive"] = True
+                position["stopPrice"] = max(stop_price, entry_price)
         elif trade is None and target1_hit and not position.get("partialTaken"):
-            trade = close_paper_position(account, position, quantity * 0.5, max(price, target_price), "到达第一止盈，卖出一半", signal_id, executed_at)
+            target1_sell_pct = clean_float(position.get("target1SellPct"), 25.0, 1.0)
+            trade = close_paper_position(account, position, quantity * min(100.0, max(0.0, target1_sell_pct)) / 100, max(price, target_price), "到达第一止盈，部分止盈", signal_id, executed_at)
             if str(symbol).upper() in positions:
                 position["partialTaken"] = True
                 trail_by_atr = clean_float(short_term.get("atr"), 0.0, 0.0) * clean_float(short_term.get("trailing_stop_atr_multiplier"), 1.5, 0.0)
@@ -1354,7 +1378,7 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             continue
         settings = account.get("settings") if isinstance(account.get("settings"), dict) else {}
         risk_per_trade_pct = clean_float(settings.get("riskPerTradePct"), 1.0, 0.1)
-        entry_position_pct = clean_float(settings.get("entryPositionPct"), 5.0, 1.0)
+        entry_position_pct = clean_float(settings.get("entryPositionPct"), 10.0, 1.0)
         target_etf_pct = clean_float(settings.get("targetEtfWeightPct"), 60.0, 0.0)
         target_stock_pct = clean_float(settings.get("targetStockWeightPct"), 40.0, 0.0)
         max_single_pct = clean_float(settings.get("maxSinglePositionPct"), 15.0, 1.0)
@@ -1442,6 +1466,13 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
             "targetPrice": target_price,
             "target2Price": target2_price,
             "partialTaken": False,
+            "target2Taken": False,
+            "runnerActive": False,
+            "trendRunner": bool(short_term.get("trend_runner")),
+            "target1SellPct": clean_float(short_term.get("trend_runner_target1_sell_pct"), 25.0, 1.0),
+            "target2SellPct": clean_float(short_term.get("trend_runner_target2_sell_pct"), 25.0, 1.0),
+            "trendRunnerMaxHoldingDays": int(clean_float(short_term.get("trend_runner_max_holding_days"), 60, 1)),
+            "trendRunnerAtrStopMultiplier": clean_float(short_term.get("trend_runner_atr_stop_multiplier"), 2.5, 0.1),
             "realizedPnlUsdt": 0.0,
             "openedAt": executed_at,
             "openedDate": str(snapshot.get("latest_daily_date") or item.get("date") or "")[:32],
@@ -2001,12 +2032,12 @@ def run_strategy_backtest(
             equity = metrics_now["equity"]
             stop_distance_pct = (entry_price - stop_price) / entry_price * 100
             risk_per_trade_pct = clean_float(short_rules.get("risk_per_trade_pct"), 1.0, 0.1)
-            base_position_pct = clean_float(short_rules.get("base_position_pct"), 5.0, 1.0)
+            base_position_pct = clean_float(short_rules.get("base_position_pct"), 10.0, 1.0)
             max_single_pct = clean_float(short_rules.get("max_single_position_pct"), 15.0, 1.0)
-            max_open_risk_pct = clean_float(short_rules.get("max_open_risk_pct"), 3.0, 0.1)
-            theme_max_pct = clean_float(short_term.get("theme_max_position_pct"), clean_float(short_rules.get("theme_max_position_pct"), 20.0, 1.0), 1.0)
+            max_open_risk_pct = clean_float(short_rules.get("max_open_risk_pct"), 8.0, 0.1)
+            theme_max_pct = clean_float(short_term.get("theme_max_position_pct"), clean_float(short_rules.get("theme_max_position_pct"), 25.0, 1.0), 1.0)
             asset_type = backtest_asset_type(symbol, item, asset_pool)
-            bucket_target_pct = 40.0 if asset_type == "stock" else 60.0
+            bucket_target_pct = 100.0 if requested else 40.0 if asset_type == "stock" else 60.0
             bucket_current_value = metrics_now["stockValue"] if asset_type == "stock" else metrics_now["etfValue"]
             bucket_remaining = max(0.0, equity * bucket_target_pct / 100 - bucket_current_value)
             single_remaining = max(0.0, equity * max_single_pct / 100)
@@ -2038,6 +2069,7 @@ def run_strategy_backtest(
                 "assetType": asset_type,
                 "theme": theme,
                 "quantity": quantity,
+                "initialQuantity": quantity,
                 "entryPrice": entry_price,
                 "lastPrice": entry_price,
                 "stopPrice": stop_price,
@@ -2045,6 +2077,15 @@ def run_strategy_backtest(
                 "target2Price": clean_float(short_term.get("target2_price"), 0.0, 0.0),
                 "initialRiskPerShare": entry_price - stop_price,
                 "partialTaken": False,
+                "target2Taken": False,
+                "runnerActive": False,
+                "trendRunner": bool(short_term.get("trend_runner")),
+                "target1SellPct": clean_float(short_term.get("trend_runner_target1_sell_pct"), 25.0, 1.0),
+                "target2SellPct": clean_float(short_term.get("trend_runner_target2_sell_pct"), 25.0, 1.0),
+                "trendRunnerMaxHoldingDays": int(clean_float(short_term.get("trend_runner_max_holding_days"), 60, 1)),
+                "trendRunnerAtrStopMultiplier": clean_float(short_term.get("trend_runner_atr_stop_multiplier"), 2.5, 0.1),
+                "lastAtr": clean_float(short_term.get("atr"), 0.0, 0.0),
+                "lastSma20": clean_float(short_term.get("sma20"), 0.0, 0.0),
                 "openedAt": current_time.isoformat(),
                 "openedIndex": index,
                 "entryType": str(short_term.get("entry_type") or short_term.get("trigger") or ""),
@@ -2081,9 +2122,10 @@ def run_strategy_backtest(
             target1 = clean_float(position.get("targetPrice"), 0.0, 0.0)
             target2 = clean_float(position.get("target2Price"), 0.0, 0.0)
             quantity = clean_float(position.get("quantity"), 0.0, 0.0)
+            trend_runner = bool(position.get("trendRunner"))
             stop_hit = stop_price > 0 and bar.low <= stop_price
             target1_hit = target1 > 0 and bar.high >= target1 and not position.get("partialTaken")
-            target2_hit = target2 > 0 and bar.high >= target2
+            target2_hit = target2 > 0 and bar.high >= target2 and not position.get("target2Taken")
             ambiguous = bool(stop_hit and (target1_hit or target2_hit))
             if stop_hit:
                 exit_price = min(bar.open, stop_price * (1 - slippage_pct / 100)) if bar.open < stop_price else stop_price * (1 - slippage_pct / 100)
@@ -2103,22 +2145,34 @@ def run_strategy_backtest(
                 continue
             if target2_hit:
                 exit_price = max(target2, bar.open)
+                target2_sell_pct = clean_float(position.get("target2SellPct"), 25.0, 1.0)
+                target1_sell_pct = clean_float(position.get("target1SellPct"), 25.0, 1.0)
+                combined_sell_pct = target2_sell_pct + (0.0 if position.get("partialTaken") else target1_sell_pct)
+                sell_quantity = quantity if not trend_runner else quantity * min(100.0, max(0.0, combined_sell_pct)) / 100
+                if sell_quantity <= 0:
+                    sell_quantity = quantity
                 close_backtest_position(
                     positions=positions,
                     trades=trades,
                     symbol=symbol,
-                    quantity=quantity,
+                    quantity=sell_quantity,
                     price_value=exit_price,
                     time_value=current_time,
                     reason="到达第二止盈",
                     extra={"exitReason": "target2"},
                 )
-                cash += quantity * exit_price
+                cash += sell_quantity * exit_price
                 loss_streak = 0
                 loss_streak_paused_at_index = None
+                if trend_runner and symbol in positions:
+                    positions[symbol]["partialTaken"] = True
+                    positions[symbol]["target2Taken"] = True
+                    positions[symbol]["runnerActive"] = True
+                    positions[symbol]["stopPrice"] = max(stop_price, entry_price)
                 continue
             if target1_hit:
-                sell_quantity = quantity * 0.5
+                target1_sell_pct = clean_float(position.get("target1SellPct"), 25.0, 1.0)
+                sell_quantity = quantity * min(100.0, max(0.0, target1_sell_pct)) / 100
                 exit_price = max(target1, bar.open)
                 close_backtest_position(
                     positions=positions,
@@ -2160,9 +2214,26 @@ def run_strategy_backtest(
                 if execute_time is None:
                     continue
                 holding_bars = index - int(clean_float(position.get("openedIndex"), index, 0))
+                if bool(position.get("trendRunner")) and (position.get("partialTaken") or position.get("runnerActive")):
+                    latest_atr = clean_float(short_term.get("atr"), 0.0, 0.0)
+                    latest_sma20 = clean_float(short_term.get("sma20"), 0.0, 0.0)
+                    if latest_atr > 0:
+                        position["lastAtr"] = latest_atr
+                    if latest_sma20 > 0:
+                        position["lastSma20"] = latest_sma20
+                    trail_atr = clean_float(position.get("lastAtr"), 0.0, 0.0) * clean_float(position.get("trendRunnerAtrStopMultiplier"), 2.5, 0.1)
+                    trail_candidates = [
+                        clean_float(position.get("stopPrice"), 0.0, 0.0),
+                        clean_float(position.get("entryPrice"), 0.0, 0.0),
+                    ]
+                    if latest_sma20 > 0:
+                        trail_candidates.append(latest_sma20)
+                    if trail_atr > 0 and current_prices.get(symbol, 0.0) > 0:
+                        trail_candidates.append(current_prices[symbol] - trail_atr)
+                    position["stopPrice"] = max(trail_candidates)
                 if short_term.get("sell_signal"):
                     pending_sells.append({"time": execute_time, "symbol": symbol, "reason": "建议卖出信号", "exitReason": "signal_exit"})
-                elif holding_bars >= int(clean_float(short_rules.get("max_holding_days"), 14, 1)) * bpd:
+                elif holding_bars >= int(clean_float(position.get("trendRunnerMaxHoldingDays") if bool(position.get("trendRunner")) and (position.get("partialTaken") or position.get("runnerActive")) else short_rules.get("max_holding_days"), 14, 1)) * bpd:
                     pending_sells.append({"time": execute_time, "symbol": symbol, "reason": "时间止损：超过最大持仓周期", "exitReason": "time_stop"})
                 elif holding_bars >= int(clean_float(short_rules.get("time_stop_tp1_days"), 10, 1)) * bpd and not position.get("partialTaken"):
                     if current_prices.get(symbol, 0) < clean_float(position.get("entryPrice"), 0.0, 0.0):
