@@ -325,16 +325,31 @@ def short_term_rules(config: dict[str, Any]) -> dict[str, Any]:
         "breakout_window_days": 14,
         "pullback_lookback_days": 5,
         "near_support_pct": 1.0,
-        "pullback_reclaim_buffer_pct": 0.4,
         "pullback_volume_floor_pct": 80.0,
-        "breakout_buffer_pct": 0.2,
+        "atr_period": 14,
+        "min_breakout_buffer_pct": 0.3,
+        "min_stop_buffer_pct": 0.2,
+        "min_support_confirm_buffer_pct": 0.3,
+        "atr_breakout_multiplier": 0.25,
+        "atr_stop_multiplier": 0.25,
+        "atr_support_multiplier": 0.20,
         "volume_multiplier": 1.2,
-        "stop_buffer_pct": 0.2,
         "max_stop_distance_pct": 4.0,
-        "min_risk_reward": 1.8,
+        "min_target1_r": 1.3,
+        "ideal_target1_r": 1.8,
+        "min_risk_reward": 1.3,
         "second_target_r": 2.0,
         "risk_per_trade_pct": 1.0,
+        "base_position_pct": 5.0,
+        "max_single_position_pct": 15.0,
+        "min_position_pct": 1.0,
+        "max_open_risk_pct": 3.0,
         "weak_momentum_5d_pct": -2.0,
+        "time_stop_mfe_days": 5,
+        "time_stop_mfe_r": 0.8,
+        "time_stop_tp1_days": 10,
+        "max_holding_days": 14,
+        "event_risk_default": "unknown",
     }
     defaults.update(config.get("short_term") or {})
     return defaults
@@ -351,6 +366,17 @@ def average_dollar_volume(bars: list[Bar], days: int) -> float | None:
         return None
     values = [bar.close * bar.volume for bar in bars[-days:] if bar.close > 0 and bar.volume is not None]
     return statistics.fmean(values) if values else None
+
+
+def average_true_range(bars: list[Bar], days: int) -> float | None:
+    if len(bars) < days + 1:
+        return None
+    ranges: list[float] = []
+    for idx in range(len(bars) - days, len(bars)):
+        bar = bars[idx]
+        prior_close = bars[idx - 1].close
+        ranges.append(max(bar.high - bar.low, abs(bar.high - prior_close), abs(bar.low - prior_close)))
+    return statistics.fmean(ranges) if ranges else None
 
 
 def build_short_term_analysis(
@@ -371,9 +397,24 @@ def build_short_term_analysis(
     entry_price = latest.close
     lookback = int(rules["pullback_lookback_days"])
     breakout_window = int(rules["breakout_window_days"])
+    atr_period = int(rules["atr_period"])
 
     avg_volume20 = statistics.fmean([v for v in volumes[-20:] if v is not None]) if len(volumes) >= 20 else None
     avg_dollar_volume20 = average_dollar_volume(bars, 20)
+    atr_value = average_true_range(bars, atr_period)
+    atr_pct = atr_value / entry_price * 100 if atr_value is not None and entry_price > 0 else None
+    breakout_buffer_pct = max(
+        float(rules["min_breakout_buffer_pct"]),
+        float(rules["atr_breakout_multiplier"]) * atr_pct,
+    ) if atr_pct is not None else float(rules["min_breakout_buffer_pct"])
+    stop_buffer_pct = max(
+        float(rules["min_stop_buffer_pct"]),
+        float(rules["atr_stop_multiplier"]) * atr_pct,
+    ) if atr_pct is not None else float(rules["min_stop_buffer_pct"])
+    support_confirm_buffer_pct = max(
+        float(rules["min_support_confirm_buffer_pct"]),
+        float(rules["atr_support_multiplier"]) * atr_pct,
+    ) if atr_pct is not None else float(rules["min_support_confirm_buffer_pct"])
     prior_sma20 = statistics.fmean(closes[-23:-3]) if len(closes) >= 23 else None
     sma20_slope_pct_3d = percent_change(sma20, prior_sma20)
     recent_low = safe_min(lows[-lookback:])
@@ -397,11 +438,10 @@ def build_short_term_analysis(
             if abs(bars[idx].low - support_base) / support_base * 100 <= float(rules["near_support_pct"])
         ]
     recent_touch_support = bool(support_touch_indices)
-    reclaim_buffer_pct = float(rules["pullback_reclaim_buffer_pct"])
     volume_floor_pct = float(rules["pullback_volume_floor_pct"])
     pullback_price_reclaim = bool(
         support_base
-        and latest.close >= support_base * (1 + reclaim_buffer_pct / 100)
+        and latest.close >= support_base * (1 + support_confirm_buffer_pct / 100)
     )
     pullback_next_day_hold = bool(
         support_base
@@ -415,7 +455,7 @@ def build_short_term_analysis(
         avg_volume20 is not None
         and latest.volume >= avg_volume20 * volume_floor_pct / 100
     )
-    pullback_confirmation_ok = bool(pullback_price_reclaim or pullback_next_day_hold or pullback_volume_ok)
+    pullback_confirmation_ok = bool(pullback_price_reclaim or pullback_next_day_hold)
     pullback_base_setup = bool(
         support_base
         and recent_touch_support
@@ -424,19 +464,24 @@ def build_short_term_analysis(
         and latest.close > sma20
     )
     pullback_setup = bool(pullback_base_setup and pullback_confirmation_ok)
+    breakout_price_confirmed = bool(
+        breakout_level
+        and latest.close >= breakout_level * (1 + breakout_buffer_pct / 100)
+    )
+    breakout_volume_ok = bool(
+        avg_volume20 is not None
+        and latest.volume >= avg_volume20 * float(rules["volume_multiplier"])
+    )
     breakout_setup = bool(
         breakout_level
         and latest.close > breakout_level
-        and (
-            (avg_volume20 is not None and latest.volume >= avg_volume20 * float(rules["volume_multiplier"]))
-            or latest.close >= breakout_level * (1 + float(rules["breakout_buffer_pct"]) / 100)
-        )
+        and breakout_price_confirmed
     )
 
     stop_base = platform_low if breakout_setup and platform_low else support_base
     if stop_base is None and sma20 is not None and sma20 <= entry_price:
         stop_base = sma20
-    stop_price = stop_base * (1 - float(rules["stop_buffer_pct"]) / 100) if stop_base else None
+    stop_price = stop_base * (1 - stop_buffer_pct / 100) if stop_base else None
     risk_per_share = entry_price - stop_price if stop_price is not None else None
     stop_distance_pct = risk_per_share / entry_price * 100 if risk_per_share and risk_per_share > 0 else None
 
@@ -445,22 +490,42 @@ def build_short_term_analysis(
         for value in [breakout_level, prior_target_high]
         if value is not None and value > entry_price
     ]
+    target_source = None
     if target_candidates:
-        target_price = min(target_candidates)
+        technical_target = min(target_candidates)
+        target_price = technical_target
         target_source = "technical_resistance"
     elif risk_per_share and risk_per_share > 0:
-        target_price = entry_price + risk_per_share * float(rules["min_risk_reward"])
+        target_price = entry_price + risk_per_share * float(rules["ideal_target1_r"])
         target_source = "risk_reward"
     else:
         target_price = None
-        target_source = None
     target2_price = entry_price + risk_per_share * float(rules["second_target_r"]) if risk_per_share and risk_per_share > 0 else None
-    risk_reward = (target_price - entry_price) / risk_per_share if target_price and risk_per_share and risk_per_share > 0 else None
+    target1_r = (target_price - entry_price) / risk_per_share if target_price and risk_per_share and risk_per_share > 0 else None
+    target2_r = (target2_price - entry_price) / risk_per_share if target2_price and risk_per_share and risk_per_share > 0 else None
+    risk_reward = target1_r
 
     equity = config.get("account", {}).get("equity")
     max_position_value = None
     if equity not in (None, 0) and stop_distance_pct and stop_distance_pct > 0:
         max_position_value = float(equity) * float(rules["risk_per_trade_pct"]) / 100 / (stop_distance_pct / 100)
+
+    risk_position_pct = (
+        float(rules["risk_per_trade_pct"]) / stop_distance_pct * 100
+        if stop_distance_pct and stop_distance_pct > 0
+        else None
+    )
+    position_pct_candidates = [
+        value
+        for value in [
+            float(rules["base_position_pct"]),
+            float(rules["max_single_position_pct"]),
+            risk_position_pct,
+        ]
+        if value is not None and value > 0
+    ]
+    position_pct = min(position_pct_candidates) if position_pct_candidates else None
+    position_too_small = bool(position_pct is not None and position_pct < float(rules["min_position_pct"]))
 
     momentum5 = rate_of_change(closes, 5)
     sell_reasons: list[str] = []
@@ -475,6 +540,24 @@ def build_short_term_analysis(
     if momentum5 is not None and momentum5 <= float(rules["weak_momentum_5d_pct"]):
         sell_reasons.append("5 日动量明显转弱")
 
+    hard_exit_reasons: list[str] = []
+    soft_exit_reasons: list[str] = []
+    if stop_price is not None and latest.close < stop_price:
+        hard_exit_reasons.append("跌破初始止损位")
+    if prior_low is not None and latest.close < prior_low:
+        hard_exit_reasons.append("跌破关键结构位")
+    if sma20 is not None and latest.close < sma20:
+        soft_exit_reasons.append("跌破 SMA20")
+    if failed_breakout:
+        soft_exit_reasons.append("突破失败")
+    if momentum5 is not None and momentum5 <= float(rules["weak_momentum_5d_pct"]):
+        soft_exit_reasons.append("5 日动量明显转弱")
+    sell_reasons = hard_exit_reasons + soft_exit_reasons
+
+    event_risk_source = config.get("event_risk") if isinstance(config.get("event_risk"), dict) else {}
+    event_risk_status = str(event_risk_source.get(symbol, rules["event_risk_default"])).strip().lower()
+    event_risk_ok = event_risk_status not in {"true", "yes", "1", "high", "blocked"}
+
     reject_reasons: list[str] = []
     asset_eligible = role != "cash"
     liquidity_ok = bool(avg_dollar_volume20 is not None and avg_dollar_volume20 >= float(rules["min_avg_dollar_volume_20"]))
@@ -482,7 +565,7 @@ def build_short_term_analysis(
     price_above_sma20 = bool(sma20 is not None and latest.close > sma20)
     sma20_flat_or_up = bool(sma20_slope_pct_3d is not None and sma20_slope_pct_3d >= float(rules["sma20_flat_slope_pct_3d"]))
     stop_distance_ok = bool(stop_distance_pct is not None and stop_distance_pct <= float(rules["max_stop_distance_pct"]))
-    risk_reward_ok = bool(risk_reward is not None and risk_reward >= float(rules["min_risk_reward"]))
+    risk_reward_ok = bool(risk_reward is not None and risk_reward >= float(rules["min_target1_r"]))
     trigger = "pullback" if pullback_setup else "breakout" if breakout_setup else None
 
     checks = [
@@ -499,8 +582,38 @@ def build_short_term_analysis(
     for ok, reason in checks:
         if not ok:
             reject_reasons.append(reason)
+    reject_reasons = [reason for reason in reject_reasons if "1:1.8" not in reason]
+    if not risk_reward_ok:
+        reject_reasons.append("第一止盈低于 1.3R")
+    if position_too_small:
+        reject_reasons.append("按风险反推的实际仓位低于 1%")
+    if not event_risk_ok:
+        reject_reasons.append("事件风险为 true，暂停新开仓")
     if pullback_base_setup and not pullback_confirmation_ok and not breakout_setup:
         reject_reasons.append("回踩确认不足：收盘未高于支撑缓冲、无次日支撑确认且量能萎缩")
+
+    confidence_score = 50
+    if trigger == "pullback":
+        confidence_score += 10
+    if trigger == "breakout":
+        confidence_score += 12
+    if pullback_volume_ok or breakout_volume_ok:
+        confidence_score += 8
+    if risk_reward is not None and risk_reward >= float(rules["ideal_target1_r"]):
+        confidence_score += 12
+    if event_risk_status == "unknown":
+        confidence_score -= 8
+    if reject_reasons:
+        confidence_score -= min(30, len(reject_reasons) * 8)
+    confidence_score = max(0, min(100, confidence_score))
+
+    risk_notes: list[str] = []
+    if event_risk_status == "unknown":
+        risk_notes.append("事件风险未接入，需人工确认")
+    if stop_distance_pct is not None and stop_distance_pct > float(rules["max_stop_distance_pct"]):
+        risk_notes.append("止损距离过远")
+    if position_too_small:
+        risk_notes.append("风险预算反推仓位过小")
 
     return {
         "timeframe": f"{rules['timeframe_days'][0]}-{rules['timeframe_days'][1]}D",
@@ -517,18 +630,42 @@ def build_short_term_analysis(
         "pullback_price_reclaim": pullback_price_reclaim,
         "pullback_next_day_hold": pullback_next_day_hold,
         "pullback_volume_ok": pullback_volume_ok,
-        "pullback_reclaim_buffer_pct": reclaim_buffer_pct,
+        "pullback_reclaim_buffer_pct": support_confirm_buffer_pct,
+        "support_confirm_buffer_pct": support_confirm_buffer_pct,
         "pullback_volume_floor_pct": volume_floor_pct,
         "breakout_setup": breakout_setup,
+        "breakout_price_confirmed": breakout_price_confirmed,
+        "breakout_volume_ok": breakout_volume_ok,
+        "breakout_buffer_pct": breakout_buffer_pct,
         "trigger": trigger,
+        "entry_type": trigger,
         "entry_price": entry_price,
+        "daily_open": latest.open,
+        "daily_high": latest.high,
+        "daily_low": latest.low,
+        "daily_close": latest.close,
         "stop_price": stop_price,
         "stop_distance_pct": stop_distance_pct,
+        "stop_buffer_pct": stop_buffer_pct,
+        "atr_period": atr_period,
+        "atr": atr_value,
+        "atr_pct": atr_pct,
         "target_price": target_price,
         "target2_price": target2_price,
+        "target1_price": target_price,
+        "target1_r": target1_r,
+        "target2_r": target2_r,
         "target_source": target_source,
         "risk_reward": risk_reward,
+        "risk_reward_valid": risk_reward_ok,
         "risk_per_trade_pct": float(rules["risk_per_trade_pct"]),
+        "base_position_pct": float(rules["base_position_pct"]),
+        "max_single_position_pct": float(rules["max_single_position_pct"]),
+        "risk_position_pct": risk_position_pct,
+        "position_pct": position_pct,
+        "position_too_small": position_too_small,
+        "min_position_pct": float(rules["min_position_pct"]),
+        "max_open_risk_pct": float(rules["max_open_risk_pct"]),
         "max_position_value": max_position_value,
         "account_equity_configured": equity is not None,
         "recent_low": recent_low,
@@ -538,7 +675,22 @@ def build_short_term_analysis(
         "stop_distance_ok": stop_distance_ok,
         "risk_reward_ok": risk_reward_ok,
         "sell_reasons": sell_reasons,
+        "hard_exit_reasons": hard_exit_reasons,
+        "soft_exit_reasons": soft_exit_reasons,
+        "exit_signal_level": "hard_exit" if hard_exit_reasons else "soft_exit" if soft_exit_reasons else None,
         "sell_signal": bool(sell_reasons),
+        "event_risk_status": event_risk_status,
+        "confidence_score": confidence_score,
+        "key_reasons": [reason for reason in [
+            "价格在 SMA20 上方" if price_above_sma20 else None,
+            "SMA20 走平或上行" if sma20_flat_or_up else None,
+            "回踩站稳" if pullback_setup else None,
+            "有效突破" if breakout_setup else None,
+            "量能确认" if pullback_volume_ok or breakout_volume_ok else None,
+        ] if reason],
+        "risk_notes": risk_notes,
+        "recommended": "no",
+        "rejection_reason": "；".join(reject_reasons[:4]),
         "market_ok": None,
         "industry_risk_status": "not_connected",
         "industry_risk_note": "行业风险数据未接入",
@@ -574,7 +726,11 @@ def finalize_short_term_signals(signals: dict[str, Signal], config: dict[str, An
             and (short_term["pullback_setup"] or short_term["breakout_setup"])
             and short_term["stop_distance_ok"]
             and short_term["risk_reward_ok"]
+            and not short_term.get("position_too_small")
+            and str(short_term.get("event_risk_status") or "").lower() not in {"true", "yes", "1", "high", "blocked"}
         )
+        short_term["recommended"] = "yes" if short_term["buy_signal"] else "no"
+        short_term["rejection_reason"] = "；".join(short_term.get("reject_reasons", [])[:4])
 
 
 def analyze_symbol(symbol: str, role: str, bars: list[Bar], config: dict[str, Any]) -> Signal:
