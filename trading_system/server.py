@@ -126,6 +126,7 @@ EDITABLE_CONFIG_PATHS = {
     "short_term.time_stop_mfe_r",
     "short_term.time_stop_tp1_days",
     "short_term.max_holding_days",
+    "short_term.loss_streak_pause_days",
     "short_term.event_risk_default",
 }
 
@@ -516,6 +517,7 @@ def sanitize_paper_account_config(payload: object) -> dict[str, object]:
             "lossStreakByEntryType": clean_loss_by_entry,
             "lossStreakByAssetType": clean_loss_by_asset,
             "entryPaused": loss_streak >= 3,
+            "entryPausedAt": raw_risk.get("entryPausedAt") if isinstance(raw_risk.get("entryPausedAt"), str) else None,
         },
         "lastRunAt": payload.get("lastRunAt") if isinstance(payload.get("lastRunAt"), str) else None,
         "lastRunLog": payload.get("lastRunLog") if isinstance(payload.get("lastRunLog"), list) else [],
@@ -1145,7 +1147,12 @@ def close_paper_position(
         by_entry[entry_type] = int(clean_float(by_entry.get(entry_type), 0, 0)) + 1 if is_r_loss else 0
         by_asset[asset_type] = int(clean_float(by_asset.get(asset_type), 0, 0)) + 1 if is_r_loss else 0
         risk["lastRealizedR"] = realized_r_for_streak
-        risk["entryPaused"] = risk["lossStreak"] >= 3
+        if risk["lossStreak"] >= 3:
+            risk["entryPaused"] = True
+            risk.setdefault("entryPausedAt", executed_at)
+        else:
+            risk["entryPaused"] = False
+            risk["entryPausedAt"] = None
     else:
         position["quantity"] = remaining
         position["realizedPnlUsdt"] = accrued
@@ -1294,6 +1301,27 @@ def run_paper_account_once(account: dict[str, object], snapshot: dict[str, objec
         risk = {}
         account["risk"] = risk
     loss_streak = int(clean_float(risk.get("lossStreak"), 0, 0))
+    pause_days = int(clean_float(settings.get("lossStreakPauseDays"), 20, 1))
+    paused_at_raw = risk.get("entryPausedAt") if isinstance(risk.get("entryPausedAt"), str) else None
+    if loss_streak >= 3:
+        paused_at = None
+        if paused_at_raw:
+            try:
+                paused_at = dt.datetime.fromisoformat(paused_at_raw.replace("Z", "+00:00"))
+            except ValueError:
+                paused_at = None
+        if paused_at is None:
+            risk["entryPausedAt"] = executed_at
+        else:
+            now_value = dt.datetime.fromisoformat(executed_at.replace("Z", "+00:00"))
+            if now_value.tzinfo is None:
+                now_value = now_value.replace(tzinfo=dt.timezone.utc)
+            if paused_at.tzinfo is None:
+                paused_at = paused_at.replace(tzinfo=dt.timezone.utc)
+            if (now_value - paused_at).days >= pause_days:
+                loss_streak = 2
+                risk["lossStreak"] = loss_streak
+                risk["entryPausedAt"] = None
     entry_multiplier = 0.5 if loss_streak >= 2 else 1.0
     entry_paused = loss_streak >= 3
     risk["entryPaused"] = entry_paused
@@ -1893,14 +1921,33 @@ def run_strategy_backtest(
     pending_sells: list[dict[str, object]] = []
     processed_signal_ids: set[str] = set()
     loss_streak = 0
+    loss_streak_paused_at_index: int | None = None
     high_watermark = initial_cash
     bpd = backtest_bars_per_day(interval)
     short_rules = config.get("short_term") if isinstance(config.get("short_term"), dict) else {}
+    loss_streak_pause_bars = max(1, int(clean_float(short_rules.get("loss_streak_pause_days"), 20, 1)) * bpd)
     slippage_pct = clean_float((config.get("execution") or {}).get("slippage_pct") if isinstance(config.get("execution"), dict) else 0.1, 0.1, 0.0)
     bars_per_year = 252 * bpd
     current_prices: dict[str, float] = {}
 
+    def update_loss_streak_from_exit(realized_r: object, current_index: int) -> None:
+        nonlocal loss_streak, loss_streak_paused_at_index
+        if realized_r is not None and clean_float(realized_r, 0.0) < 0:
+            loss_streak += 1
+            if loss_streak >= 3 and loss_streak_paused_at_index is None:
+                loss_streak_paused_at_index = current_index
+        else:
+            loss_streak = 0
+            loss_streak_paused_at_index = None
+
     for index, current_time in enumerate(timeline):
+        if (
+            loss_streak >= 3
+            and loss_streak_paused_at_index is not None
+            and index - loss_streak_paused_at_index >= loss_streak_pause_bars
+        ):
+            loss_streak = 2
+            loss_streak_paused_at_index = None
         current_bars = {
             symbol: table[current_time]
             for symbol, table in bar_by_symbol_time.items()
@@ -1929,7 +1976,7 @@ def run_strategy_backtest(
             )
             cash += quantity * bar.open
             realized_r = trades[-1].get("realizedR") if trades else None
-            loss_streak = loss_streak + 1 if realized_r is not None and clean_float(realized_r, 0.0) < 0 else 0
+            update_loss_streak_from_exit(realized_r, index)
             pending_sells.remove(order)
 
         for order in list(pending_buys):
@@ -2052,7 +2099,7 @@ def run_strategy_backtest(
                 )
                 cash += quantity * exit_price
                 realized_r = trades[-1].get("realizedR") if trades else None
-                loss_streak = loss_streak + 1 if realized_r is not None and clean_float(realized_r, 0.0) < 0 else 0
+                update_loss_streak_from_exit(realized_r, index)
                 continue
             if target2_hit:
                 exit_price = max(target2, bar.open)
@@ -2068,6 +2115,7 @@ def run_strategy_backtest(
                 )
                 cash += quantity * exit_price
                 loss_streak = 0
+                loss_streak_paused_at_index = None
                 continue
             if target1_hit:
                 sell_quantity = quantity * 0.5
