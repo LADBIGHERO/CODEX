@@ -1242,13 +1242,20 @@ def make_conclusions(metrics: pd.DataFrame, entry_summary: pd.DataFrame, exit_su
     all_good = int((cross["effective_symbol_count"] >= 5).sum())
     high_return_bad_dd = leverage[(leverage["CAGR_advantage_vs_buy_hold"] > 0.5) & (leverage["max_drawdown_improvement_vs_buy_hold"] < -3)]
     high_cost = leverage[(leverage["CAGR_advantage_vs_buy_hold"] > 0.5) & (leverage["financing_interest_pct_gross_profit"] > 20)]
-    front = float(entry_summary.loc[entry_summary["entry_family"] == "前重型", "avg_CAGR_advantage"].iloc[0])
-    back = float(entry_summary.loc[entry_summary["entry_family"] == "后重型", "avg_CAGR_advantage"].iloc[0])
-    rebound = float(entry_summary.loc[entry_summary["entry_family"] == "反弹确认后加", "avg_CAGR_advantage"].iloc[0])
-    direct = float(entry_summary[entry_summary["entry_family"].isin(["一次性加满", "线性分批"])]["avg_CAGR_advantage"].mean())
-    time_exit = float(exit_summary.loc[exit_summary["exit_family"] == "时间退出型", "avg_CAGR_advantage"].iloc[0])
-    cost_exit = float(exit_summary.loc[exit_summary["exit_family"] == "融资成本退出型", "avg_CAGR_advantage"].iloc[0])
-    return [
+    def summary_value(frame: pd.DataFrame, column: str, name: str) -> float | None:
+        sub = frame.loc[frame[column] == name, "avg_CAGR_advantage"]
+        if sub.empty:
+            return None
+        return float(sub.iloc[0])
+
+    front = summary_value(entry_summary, "entry_family", "前重型")
+    back = summary_value(entry_summary, "entry_family", "后重型")
+    rebound = summary_value(entry_summary, "entry_family", "反弹确认后加")
+    direct_series = entry_summary[entry_summary["entry_family"].isin(["一次性加满", "线性分批"])]["avg_CAGR_advantage"]
+    direct = float(direct_series.mean()) if not direct_series.empty else None
+    time_exit = summary_value(exit_summary, "exit_family", "时间退出型")
+    cost_exit = summary_value(exit_summary, "exit_family", "融资成本退出型")
+    answers = [
         f"整体平均表现最好的加杠杆方式是「{best_entry['entry_family']}」，平均年化优势 {best_entry['avg_CAGR_advantage']:.2f} 个百分点。",
         f"整体平均表现最好的去杠杆方式是「{best_exit['exit_family']}」，平均年化优势 {best_exit['avg_CAGR_advantage']:.2f} 个百分点。",
         f"8×8 家族中平均最好的格子是「{best_cell['entry_family']} × {best_cell['exit_family']}」，平均年化优势 {best_cell['avg_CAGR_advantage']:.2f} 个百分点。",
@@ -1256,10 +1263,20 @@ def make_conclusions(metrics: pd.DataFrame, entry_summary: pd.DataFrame, exit_su
         f"五个品种都达到年化优势超过 0.5 个百分点的组合数量为 {all_good} 个；若数量很少，说明策略仍有明显市场特征依赖。",
         f"收益高但最大回撤恶化超过 3 个百分点的组合共有 {len(high_return_bad_dd)} 个，需要谨慎过滤。",
         f"收益高但融资利息吃掉毛利润超过 20% 的组合共有 {len(high_cost)} 个，属于融资敏感组合。",
-        f"前重型平均年化优势 {front:.2f}，后重型平均年化优势 {back:.2f}；数值更高的一侧更适合本轮深跌加杠杆设定。",
-        f"反弹确认后加的平均年化优势 {rebound:.2f}，直接左侧加仓类平均年化优势 {direct:.2f}，可据此判断确认后加是否更稳。",
-        f"时间退出型平均年化优势 {time_exit:.2f}，融资成本退出型平均年化优势 {cost_exit:.2f}；两者用于观察坏周期损失控制是否有效。",
     ]
+    if front is not None and back is not None:
+        answers.append(f"前重型平均年化优势 {front:.2f}，后重型平均年化优势 {back:.2f}；数值更高的一侧更适合本轮深跌加杠杆设定。")
+    else:
+        answers.append("本轮只测试筛选后的少量组合，未同时覆盖前重型和后重型，不能比较二者优劣。")
+    if rebound is not None and direct is not None:
+        answers.append(f"反弹确认后加的平均年化优势 {rebound:.2f}，直接左侧加仓类平均年化优势 {direct:.2f}，可据此判断确认后加是否更稳。")
+    else:
+        answers.append("本轮筛选组合不足以完整比较反弹确认后加与直接左侧加仓。")
+    if time_exit is not None and cost_exit is not None:
+        answers.append(f"时间退出型平均年化优势 {time_exit:.2f}，融资成本退出型平均年化优势 {cost_exit:.2f}；两者用于观察坏周期损失控制是否有效。")
+    else:
+        answers.append("本轮筛选组合不足以完整比较时间退出型与融资成本退出型。")
+    return answers
 
 
 def parse_args() -> argparse.Namespace:
@@ -1269,7 +1286,41 @@ def parse_args() -> argparse.Namespace:
         default=",".join(SYMBOL_FILES.keys()),
         help="Comma-separated symbols to test. Available: " + ", ".join(SYMBOL_FILES.keys()),
     )
+    parser.add_argument(
+        "--top-combos-from",
+        default="",
+        help="Optional all_combinations_metrics.csv path. If set, only the top combos from that file are tested.",
+    )
+    parser.add_argument("--top-n", type=int, default=5, help="Number of top combos to reuse when --top-combos-from is set.")
     return parser.parse_args()
+
+
+def load_selected_combos(path_text: str, top_n: int, entries: list[EntrySpec], exits: list[ExitSpec]) -> set[tuple[str, str]] | None:
+    if not path_text:
+        return None
+    path = Path(path_text)
+    if not path.exists():
+        raise SystemExit(f"Top combo file not found: {path}")
+    frame = pd.read_csv(path)
+    required = {"entry_id", "exit_id", "CAGR_advantage_vs_buy_hold", "Calmar"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise SystemExit(f"Top combo file missing columns: {', '.join(sorted(missing))}")
+    frame = frame[frame["entry_id"] != "BUY_HOLD"].copy()
+    frame = frame.drop_duplicates(subset=["entry_id", "exit_id"])
+    frame = frame.sort_values(["CAGR_advantage_vs_buy_hold", "Calmar"], ascending=False).head(top_n)
+    entry_ids = {item.entry_id for item in entries}
+    exit_ids = {item.exit_id for item in exits}
+    combos: set[tuple[str, str]] = set()
+    for _, row in frame.iterrows():
+        entry_id = str(row["entry_id"])
+        exit_id = str(row["exit_id"])
+        if entry_id not in entry_ids or exit_id not in exit_ids:
+            raise SystemExit(f"Unknown combo in top combo file: {entry_id} / {exit_id}")
+        combos.add((entry_id, exit_id))
+    if not combos:
+        raise SystemExit(f"No usable combos found in {path}")
+    return combos
 
 
 def main() -> None:
@@ -1281,6 +1332,7 @@ def main() -> None:
     start_time = dt.datetime.now()
     entries = entry_specs()
     exits = exit_specs()
+    selected_combos = load_selected_combos(args.top_combos_from, args.top_n, entries, exits)
     frames: dict[str, pd.DataFrame] = {}
     input_rows: list[dict[str, Any]] = []
     for symbol in selected_symbols:
@@ -1312,6 +1364,8 @@ def main() -> None:
         metrics_rows.append(metric_row(symbol, frame, None, None, buy_hold_result, buy_hold_metrics))
         for entry in entries:
             for exit_spec in exits:
+                if selected_combos is not None and (entry.entry_id, exit_spec.exit_id) not in selected_combos:
+                    continue
                 result = simulate(symbol, frame, entry, exit_spec, keep_daily=False)
                 row = metric_row(symbol, frame, entry, exit_spec, result, buy_hold_metrics)
                 metrics_rows.append(row)
@@ -1332,7 +1386,8 @@ def main() -> None:
     avg_adv = float(metrics[metrics["entry_family"] != "买入持有"]["CAGR_advantage_vs_buy_hold"].mean())
     timestamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     symbol_slug = "-".join(selected_symbols).lower()
-    run_id = f"leverage-matrix-balance-sheet-7pct_{symbol_slug}_avgadv{avg_adv:+.2f}_{timestamp}"
+    top_slug = f"_top{len(selected_combos)}" if selected_combos is not None else ""
+    run_id = f"leverage-matrix-balance-sheet-7pct_{symbol_slug}{top_slug}_avgadv{avg_adv:+.2f}_{timestamp}"
     out_dir = REPORTS / run_id
     tables_dir = out_dir / "tables"
     charts_dir = out_dir / "charts"
